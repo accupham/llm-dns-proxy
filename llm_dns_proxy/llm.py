@@ -55,15 +55,50 @@ class LLMProcessor:
 
         return json.dumps({"ok": False, "error": f"Unknown tool: {name}", "args": args})
 
+    def list_models(self) -> List[str]:
+        """List available models from the API."""
+        try:
+            models_response = self.client.models.list()
+            model_names = [model.id for model in models_response.data]
+            return sorted(model_names)
+        except Exception as e:
+            return [f"Error fetching models: {str(e)}"]
+
+    def set_model(self, model_name: str) -> bool:
+        """Set the current model."""
+        try:
+            # Validate model exists by checking available models
+            available_models = self.list_models()
+
+            # If we got an error instead of models, assume the model is valid
+            if available_models and available_models[0].startswith("Error"):
+                self.model = model_name
+                return True
+
+            # Check if model is in the available models
+            if model_name in available_models:
+                self.model = model_name
+                return True
+            else:
+                return False
+        except Exception:
+            # Fallback: set the model anyway
+            self.model = model_name
+            return True
+
+    def get_current_model(self) -> str:
+        """Get the currently configured model."""
+        return self.model
+
     def process_message_stream(
         self,
         message: str,
         system_prompt: Optional[str] = None,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         *,
-        temperature: float = 0.7,
-        max_tokens: int = 1200,
-        max_tool_iterations: int = 4
+        temperature: float = 1.0,
+        max_tokens: int = 3600,
+        max_tool_iterations: int = 6
     ):
         """
         Process a message and yield streaming tokens/chunks.

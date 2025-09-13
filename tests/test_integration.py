@@ -28,10 +28,11 @@ class TestIntegration:
         pytest.skip("Integration test requires running server - skipping in unit tests")
 
     def test_encryption_integrity(self, crypto_key):
-        """Test that messages are properly encrypted and decrypted."""
+        """Test that messages are properly encrypted and decrypted with various lengths."""
         client1 = DNSLLMClient(crypto_key=crypto_key)
         client2 = DNSLLMClient(crypto_key=crypto_key)
 
+        # Test basic encryption/decryption
         message = "Secret message"
         encrypted1 = client1.crypto.encrypt(message)
         encrypted2 = client2.crypto.encrypt(message)
@@ -43,6 +44,40 @@ class TestIntegration:
 
         assert decrypted1 == message
         assert decrypted2 == message
+
+        # Test incremental message lengths to catch padding issues
+        for length in range(1, 129):  # Test 1 to 128 character messages
+            test_message = 'A' * length
+            encrypted = client1.crypto.encrypt(test_message)
+            decrypted = client1.crypto.decrypt(encrypted)
+            assert decrypted == test_message, f"Failed at length {length}"
+
+        # Test specific padding boundary cases (common block sizes)
+        padding_test_lengths = [15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 255, 256, 257]
+        for length in padding_test_lengths:
+            test_message = 'B' * length
+            encrypted = client1.crypto.encrypt(test_message)
+            decrypted = client1.crypto.decrypt(encrypted)
+            assert decrypted == test_message, f"Failed at padding boundary length {length}"
+
+        # Test empty message
+        empty_message = ""
+        encrypted_empty = client1.crypto.encrypt(empty_message)
+        decrypted_empty = client1.crypto.decrypt(encrypted_empty)
+        assert decrypted_empty == empty_message
+
+        # Test messages with special characters and unicode
+        special_messages = [
+            "Hello\nworld\t!",
+            "Special chars: @#$%^&*()",
+            "Unicode: 你好世界 🔐",
+            " " * 50,  # Whitespace only
+            "\x00\x01\x02\x03",  # Binary data
+        ]
+        for special_msg in special_messages:
+            encrypted_special = client1.crypto.encrypt(special_msg)
+            decrypted_special = client1.crypto.decrypt(encrypted_special)
+            assert decrypted_special == special_msg, f"Failed for special message: {repr(special_msg)}"
 
     def test_different_keys_cannot_decrypt(self):
         """Test that different encryption keys cannot decrypt each other's messages."""

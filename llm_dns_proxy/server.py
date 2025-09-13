@@ -12,6 +12,7 @@ from dnslib.server import DNSServer, BaseResolver
 from .crypto import CryptoManager
 from .chunking import DNSChunker
 from .llm import LLMProcessor
+from .version import get_version_string
 
 
 logging.basicConfig(level=logging.INFO)
@@ -28,6 +29,8 @@ class LLMDNSResolver(BaseResolver):
         # Conversation state management (maps client IP to conversation history)
         self.conversations: Dict[str, List[Dict[str, str]]] = {}
         self.lock = threading.Lock()
+        self.version = get_version_string()
+        self.model_name = openai_model or "gpt-4o"  # Default model if not specified
 
     def resolve(self, request, handler):
         """
@@ -47,6 +50,8 @@ class LLMDNSResolver(BaseResolver):
             return self._handle_message_chunk(request, reply, qname, handler)
         elif qname_lower.startswith('get.'):
             return self._handle_response_request(request, reply, qname)
+        elif qname_lower.startswith('version.'):
+            return self._handle_version_request(request, reply)
         else:
             logger.warning(f"Unknown query type: {qname}")
             return reply
@@ -70,12 +75,92 @@ class LLMDNSResolver(BaseResolver):
                 logger.info(f"Decrypted message: {decrypted_message[:100]}...")
 
                 # Check for special commands
-                if decrypted_message.lower().strip() in ['/clear', '/reset', '/new']:
+                command = decrypted_message.lower().strip()
+                if command in ['/clear', '/reset']:
                     # Clear conversation history
                     with self.lock:
                         self.conversations[client_ip] = []
-                    llm_response = "Conversation history cleared. Starting fresh!"
+                    llm_response = ">>> Conversation History Reset.[EOS]"
                     logger.info(f"Cleared conversation history for client {client_ip}")
+
+                    # Create response chunks for the clear message
+                    encrypted_response = self.crypto.encrypt(llm_response)
+                    response_chunks = self.chunker.create_response_chunks(encrypted_response, session_id)
+
+                    with self.lock:
+                        self.response_cache[session_id] = response_chunks
+
+                elif command == '/list':
+                    # List available models
+                    models = self.llm.list_models()
+                    current_model = self.llm.get_current_model()
+
+                    if models and models[0].startswith("Error"):
+                        llm_response = f">>> Error listing models: {models[0]}\n\nCurrent model: {current_model}[EOS]"
+                    else:
+                        model_list = "\n".join([f"{'* ' if model == current_model else '  '}{model}" for model in models])
+                        llm_response = f">>> Available models:\n{model_list}\n\ncurrent model ({current_model}). Use /model <name> to switch.[EOS]"
+
+                    logger.info(f">>> Listed models for client {client_ip}")
+
+                    # Create response chunks for the model list
+                    encrypted_response = self.crypto.encrypt(llm_response)
+                    response_chunks = self.chunker.create_response_chunks(encrypted_response, session_id)
+
+                    with self.lock:
+                        self.response_cache[session_id] = response_chunks
+
+                elif command.startswith('/model '):
+                    # Switch model
+                    new_model = command[7:].strip()  # Remove '/model ' prefix
+
+                    if not new_model:
+                        llm_response = "Usage: /model <model_name>\nUse /list to see available models[EOS]"
+                    else:
+                        success = self.llm.set_model(new_model)
+                        if success:
+                            # Update server's stored model name
+                            self.model_name = new_model
+                            llm_response = f">>> Using model: {new_model}[EOS]"
+                            logger.info(f">>> Client {client_ip} switched model to {new_model}")
+                        else:
+                            current_model = self.llm.get_current_model()
+                            llm_response = f">>> Failed to switch to model: {new_model}\nCurrent model remains: {current_model}\nUse /list to see available models[EOS]"
+
+                    # Create response chunks for the model switch response
+                    encrypted_response = self.crypto.encrypt(llm_response)
+                    response_chunks = self.chunker.create_response_chunks(encrypted_response, session_id)
+
+                    with self.lock:
+                        self.response_cache[session_id] = response_chunks
+
+                elif command == '/help':
+                    # Show help information
+                    help_text = """Available Commands:
+
+/help           - Show this help message
+/clear          - Clear conversation history and start fresh
+/reset          - Same as /clear
+/list           - List all available models (current model marked with *)
+/model <name>   - Switch to a specific model (e.g., /model gpt-4-turbo)
+
+Examples:
+• /list                    - See what models are available
+• /model gpt-3.5-turbo    - Switch to GPT-3.5 Turbo
+• /model claude-3-sonnet  - Switch to Claude 3 Sonnet
+• /clear                  - Start a new conversation
+
+Current model: """ + self.model_name + "[EOS]"
+
+                    logger.info(f"Showed help to client {client_ip}")
+
+                    # Create response chunks for the help message
+                    encrypted_response = self.crypto.encrypt(help_text)
+                    response_chunks = self.chunker.create_response_chunks(encrypted_response, session_id)
+
+                    with self.lock:
+                        self.response_cache[session_id] = response_chunks
+
                 else:
                     # Get conversation history for this client
                     with self.lock:
@@ -87,7 +172,7 @@ class LLMDNSResolver(BaseResolver):
 
             except Exception as e:
                 logger.error(f"Error processing message: {e}")
-                error_response = f"Error: {str(e)}"
+                error_response = f"Error: {str(e)}[EOS]"
                 encrypted_error = self.crypto.encrypt(error_response)
                 error_chunks = self.chunker.create_response_chunks(encrypted_error, session_id)
 
@@ -117,6 +202,19 @@ class LLMDNSResolver(BaseResolver):
                 txt_record = TXT("NOT_FOUND")
                 reply.add_answer(RR(request.q.qname, QTYPE.TXT, rdata=txt_record, ttl=60))
 
+        return reply
+
+    def _handle_version_request(self, request, reply):
+        """Handle version information requests."""
+        import json
+        version_info = {
+            "version": self.version,
+            "model": self.model_name
+        }
+        version_response = json.dumps(version_info)
+        txt_record = TXT(version_response)
+        reply.add_answer(RR(request.q.qname, QTYPE.TXT, rdata=txt_record, ttl=60))
+        logger.info(f"Served version info: {self.version}, model: {self.model_name}")
         return reply
 
     def _process_streaming_response(self, decrypted_message: str, session_id: str,
@@ -174,8 +272,11 @@ class LLMDNSResolver(BaseResolver):
                             if len(self.conversations[client_ip]) > 20:
                                 self.conversations[client_ip] = self.conversations[client_ip][-20:]
 
+                        # Add EOS marker to final response
+                        complete_response_with_eos = complete_response + "[EOS]"
+
                         # Final encrypted response
-                        encrypted_response = self.crypto.encrypt(complete_response)
+                        encrypted_response = self.crypto.encrypt(complete_response_with_eos)
                         response_chunks = self.chunker.create_response_chunks(encrypted_response, session_id)
 
                         with self.lock:
@@ -187,7 +288,7 @@ class LLMDNSResolver(BaseResolver):
             except Exception as e:
                 logger.error(f"Error in streaming handler: {e}")
                 # Create error response
-                error_response = f"Error: {str(e)}"
+                error_response = f"Error: {str(e)}[EOS]"
                 encrypted_error = self.crypto.encrypt(error_response)
                 error_chunks = self.chunker.create_response_chunks(encrypted_error, session_id)
 
@@ -210,10 +311,12 @@ class LLMDNSServer:
 
     def start(self):
         """Start the DNS server."""
-        logger.info(f"Starting LLM DNS server on {self.host}:{self.port}")
+        version = self.resolver.version
+        model = self.resolver.model_name
+        logger.info(f"Starting LLM DNS server on {self.host}:{self.port} ({version}, model: {model})")
         self.server = DNSServer(self.resolver, port=self.port, address=self.host)
         self.server.start_thread()
-        logger.info("Server started successfully")
+        logger.info(f"Server started successfully ({version}, model: {model})")
 
     def stop(self):
         """Stop the DNS server."""

@@ -13,7 +13,9 @@ from typing import Dict, List, Optional
 from dnslib import DNSRecord, QTYPE, DNSQuestion, DNSHeader
 
 from .crypto import CryptoManager
+#from .native_crypto import CryptoManager
 from .chunking import DNSChunker
+from .version import get_version_string
 
 
 class SimpleSpinner:
@@ -45,7 +47,7 @@ class SimpleSpinner:
 
 
 class DNSLLMClient:
-    def __init__(self, server_host: str = "127.0.0.1", server_port: int = 5353, crypto_key: bytes = None, verbose: bool = False):
+    def __init__(self, server_host: str = "127.0.0.1", server_port: int = 5353, crypto_key: bytes = None, verbose: bool = False, poll_interval: float = 0.5, model: str = "LLM"):
         self.server_host = server_host
         self.server_port = server_port
         self.crypto = CryptoManager(crypto_key)
@@ -53,6 +55,9 @@ class DNSLLMClient:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(30.0)
         self.verbose = verbose
+        self.poll_interval = poll_interval
+        self.model = model
+        self.client_version = get_version_string()
 
     def _send_dns_query(self, query_name: str) -> Optional[str]:
         """Send a DNS query and return the TXT record response."""
@@ -115,7 +120,7 @@ class DNSLLMClient:
             chunks = self.chunker.create_chunks(encrypted_data, session_id)
 
             if show_spinner and not self.verbose:
-                spinner = SimpleSpinner("-->")
+                spinner = SimpleSpinner("...")
                 spinner.start()
 
             if self.verbose:
@@ -146,15 +151,31 @@ class DNSLLMClient:
 
         last_content = ""
         final_response = None
+        start_time = time.time()
+        max_wait_time = 60  # Maximum wait time in seconds
+        last_content_change_time = time.time()
 
         # Initial wait for processing to start
-        time.sleep(1)
+        time.sleep(self.poll_interval)
 
         while True:
+            # Check for timeout
+            current_time = time.time()
+            if current_time - start_time > max_wait_time:
+                if self.verbose:
+                    click.echo(f"\nTimeout waiting for response after {max_wait_time}s")
+                final_response = last_content.rstrip('[EOS]') if last_content else "Timeout - no response received"
+                break
+
+            # Check if content hasn't changed for too long (indicates completion)
+            if last_content and current_time - last_content_change_time > 5:  # 5 seconds without change
+                final_response = last_content.rstrip('[EOS]')
+                break
+
             response_chunks = self._get_current_response_chunks(session_id)
 
             if not response_chunks:
-                time.sleep(0.1)
+                time.sleep(self.poll_interval)
                 continue
 
             try:
@@ -164,13 +185,20 @@ class DNSLLMClient:
                 # Display new content
                 if len(current_content) > len(last_content):
                     new_content = current_content[len(last_content):]
-                    sys.stdout.write(new_content)
-                    sys.stdout.flush()
-                    last_content = current_content
 
-                    # Check if this looks like a complete response
-                    # Simple heuristic: if content ends with sentence punctuation and hasn't changed for a bit
-                    if current_content.rstrip().endswith(('.', '!', '?', '\n')):
+                    # Don't display [EOS] marker to user
+                    display_content = new_content.replace('[EOS]', '')
+                    if display_content:  # Only write if there's content after removing [EOS]
+                        sys.stdout.write(display_content)
+                        sys.stdout.flush()
+
+                    last_content = current_content
+                    last_content_change_time = current_time  # Update the last change time
+
+                    # Check if response is complete by looking for [EOS] marker
+                    looks_complete = current_content.endswith('[EOS]')
+
+                    if looks_complete:
                         time.sleep(0.5)  # Wait to see if more content comes
 
                         # Check again
@@ -181,14 +209,15 @@ class DNSLLMClient:
                                 new_content_check = self.crypto.decrypt(new_encrypted)
 
                                 if new_content_check == current_content:
-                                    # No change, likely complete
-                                    final_response = current_content
+                                    # No change, response is complete
+                                    # Remove [EOS] marker from final response
+                                    final_response = current_content.rstrip('[EOS]')
                                     break
 
                             except Exception:
                                 pass
 
-                time.sleep(0.1)  # Small delay between polls
+                time.sleep(self.poll_interval)  # Small delay between polls
 
             except Exception as e:
                 if self.verbose:
@@ -231,7 +260,7 @@ class DNSLLMClient:
 
         try:
             if show_spinner and not self.verbose:
-                spinner = SimpleSpinner("...")
+                spinner = SimpleSpinner("-->")
                 spinner.start()
             elif self.verbose:
                 click.echo("Message sent, waiting for processing...")
@@ -296,6 +325,27 @@ class DNSLLMClient:
             if spinner:
                 spinner.stop()
 
+    def get_server_info(self) -> Optional[Dict[str, str]]:
+        """Get the server version and model info."""
+        import json
+        try:
+            version_query = "version.llm.local"
+            response = self._send_dns_query(version_query)
+            if response and response != "NOT_FOUND":
+                # Handle quoted TXT records
+                if response.startswith('"') and response.endswith('"'):
+                    response = response[1:-1]
+
+                # Try to parse as JSON (new format)
+                try:
+                    return json.loads(response)
+                except json.JSONDecodeError:
+                    # Fallback to old format (just version string)
+                    return {"version": response, "model": None}
+            return None
+        except Exception:
+            return None
+
     def test_connection(self) -> bool:
         """Test basic connectivity to the DNS server."""
         try:
@@ -337,9 +387,11 @@ def cli():
 @click.option('--port', default=5353, help='DNS server port')
 @click.option('--message', '-m', help='Single message to send')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
-def chat(server, port, message, verbose):
+@click.option('--poll-interval', default=0.5, help='Polling interval in seconds for streaming responses')
+@click.option('--model', default='LLM', help='Model name to display in chat (for display purposes only)')
+def chat(server, port, message, verbose, poll_interval, model):
     """Start a chat session with the LLM through DNS."""
-    client = DNSLLMClient(server, port, verbose=verbose)
+    client = DNSLLMClient(server, port, verbose=verbose, poll_interval=poll_interval, model=model)
 
     # Test connection first
     if not verbose:
@@ -352,7 +404,30 @@ def chat(server, port, message, verbose):
         spinner.stop()
 
     if connection_ok:
-        click.echo(f"✓ Connected to DNS server at {server}:{port}")
+        # Get server info
+        server_info = client.get_server_info()
+        client_version = client.client_version
+
+        if server_info:
+            server_version = server_info.get("version")
+            server_model = server_info.get("model")
+
+            if server_model:
+                click.echo(f"✓ Connected to DNS server at {server}:{port}")
+                click.echo(f"  Server: {server_version} (model: {server_model})")
+                click.echo(f"  Client: {client_version}")
+            else:
+                click.echo(f"✓ Connected to DNS server at {server}:{port} (server: {server_version}, client: {client_version})")
+
+            # Check for version mismatch
+            if server_version and server_version != client_version:
+                click.echo(f"⚠️  WARNING: Version mismatch detected!")
+                click.echo(f"   Server version: {server_version}")
+                click.echo(f"   Client version: {client_version}")
+        else:
+            click.echo(f"✓ Connected to DNS server at {server}:{port} (client: {client_version})")
+            click.echo("⚠️  Could not retrieve server version - using older server?")
+
         if verbose:
             click.echo("Connection test successful - chat is ready!")
     else:
@@ -363,29 +438,27 @@ def chat(server, port, message, verbose):
 
     try:
         if message:
-            click.echo(f"You: {message}")
-            if not verbose:
-                click.echo("Assistant: ", nl=False)
             response = client.send_message(message, show_spinner=not verbose, streaming=not verbose)
             if response and verbose:
-                click.echo(f"Assistant: {response}")
+                click.echo(response)
             elif not verbose:
                 click.echo()  # Add newline after streaming response
         else:
-            click.echo("Starting DNS LLM chat. Type 'quit' to exit.")
-            click.echo("=" * 50)
+            click.echo("Chat session started. Type '/quit' to exit, '/help' for commands.")
+            click.echo()
 
             while True:
                 try:
-                    user_input = click.prompt("You", type=str)
-                    if user_input.lower() in ['quit', 'exit']:
+                    user_input = input("> ")
+                    if user_input.lower() in ['/quit', '/exit']:
                         break
 
-                    if not verbose:
-                        click.echo("Assistant: ", nl=False)
+                    # Move cursor up one line and overwrite the input with grey color
+                    print(f"\033[1A\033[K> \033[90m{user_input}\033[0m")
+
                     response = client.send_message(user_input, show_spinner=not verbose, streaming=not verbose)
                     if response and verbose:
-                        click.echo(f"Assistant: {response}")
+                        click.echo(response)
                     elif response and not verbose:
                         click.echo()  # Add newline after streaming response
                     else:
@@ -403,9 +476,11 @@ def chat(server, port, message, verbose):
 @click.option('--server', default='127.0.0.1', help='DNS server address')
 @click.option('--port', default=5353, help='DNS server port')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
-def test_connection(server, port, verbose):
+@click.option('--poll-interval', default=0.5, help='Polling interval in seconds for streaming responses')
+@click.option('--model', default='LLM', help='Model name to display in chat (for display purposes only)')
+def test_connection(server, port, verbose, poll_interval, model):
     """Test connection to the DNS server."""
-    client = DNSLLMClient(server, port, verbose=verbose)
+    client = DNSLLMClient(server, port, verbose=verbose, poll_interval=poll_interval, model=model)
 
     try:
         click.echo(f"Testing connection to {server}:{port}")
@@ -425,7 +500,29 @@ def test_connection(server, port, verbose):
             click.echo("Server is not reachable or not responding to DNS queries")
             return
 
-        click.echo("✓ Basic connectivity test passed")
+        # Get server info
+        server_info = client.get_server_info()
+        client_version = client.client_version
+
+        if server_info:
+            server_version = server_info.get("version")
+            server_model = server_info.get("model")
+
+            if server_model:
+                click.echo(f"✓ Basic connectivity test passed")
+                click.echo(f"  Server: {server_version} (model: {server_model})")
+                click.echo(f"  Client: {client_version}")
+            else:
+                click.echo(f"✓ Basic connectivity test passed (server: {server_version}, client: {client_version})")
+
+            # Check for version mismatch
+            if server_version and server_version != client_version:
+                click.echo(f"⚠️  WARNING: Version mismatch detected!")
+                click.echo(f"   Server version: {server_version}")
+                click.echo(f"   Client version: {client_version}")
+        else:
+            click.echo(f"✓ Basic connectivity test passed (client: {client_version})")
+            click.echo("⚠️  Could not retrieve server version - using older server?")
 
         # Test full message flow
         click.echo("Testing full message flow...")

@@ -27,12 +27,13 @@ class CryptoManager:
         return Fernet.generate_key()
 
     def encrypt(self, message: str) -> bytes:
-        """Encrypt a message and return base64-encoded bytes."""
+        """Encrypt a message and return raw Fernet token bytes."""
+        # Fernet.encrypt() already returns URL-safe base64 bytes, no need to double-encode
         encrypted = self.fernet.encrypt(message.encode())
-        return base64.b64encode(encrypted)
+        return encrypted
 
     def decrypt(self, encrypted_data: bytes) -> str:
-        """Decrypt base64-encoded encrypted data."""
-        decoded = base64.b64decode(encrypted_data)
-        decrypted = self.fernet.decrypt(decoded)
+        """Decrypt raw Fernet token bytes."""
+        # Direct decryption of Fernet token (already in proper format)
+        decrypted = self.fernet.decrypt(encrypted_data)
         return decrypted.decode()

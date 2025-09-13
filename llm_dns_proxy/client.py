@@ -70,10 +70,21 @@ class DNSLLMClient:
 
             for rr in response.rr:
                 if rr.rtype == QTYPE.TXT:
-                    txt_data = str(rr.rdata)
-                    # Handle quoted TXT records
-                    if txt_data.startswith('"') and txt_data.endswith('"'):
-                        return txt_data[1:-1]
+                    # Handle TXT RDATA which can be a list of strings (each ≤255 bytes)
+                    rdata = rr.rdata
+
+                    # dnslib TXT RDATA has a 'data' attribute that's a list of byte strings
+                    if hasattr(rdata, 'data') and isinstance(rdata.data, list):
+                        # Join all byte strings and decode
+                        txt_bytes = b''.join(rdata.data)
+                        txt_data = txt_bytes.decode('utf-8', errors='ignore')
+                    else:
+                        # Fallback to string conversion
+                        txt_data = str(rdata)
+                        # Handle quoted TXT records
+                        if txt_data.startswith('"') and txt_data.endswith('"'):
+                            txt_data = txt_data[1:-1]
+
                     return txt_data
 
             return None

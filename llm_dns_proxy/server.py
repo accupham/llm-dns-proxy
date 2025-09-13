@@ -5,7 +5,7 @@ DNS server that handles encrypted LLM queries through DNS TXT records.
 import logging
 import socket
 import threading
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from dnslib import DNSRecord, DNSHeader, QTYPE, RR, TXT
 from dnslib.server import DNSServer, BaseResolver
 
@@ -25,6 +25,8 @@ class LLMDNSResolver(BaseResolver):
         self.chunker = DNSChunker()
         self.llm = LLMProcessor(openai_api_key, openai_base_url, openai_model)
         self.response_cache: Dict[str, Dict[int, str]] = {}
+        # Conversation state management (maps client IP to conversation history)
+        self.conversations: Dict[str, List[Dict[str, str]]] = {}
         self.lock = threading.Lock()
 
     def resolve(self, request, handler):
@@ -32,22 +34,24 @@ class LLMDNSResolver(BaseResolver):
         Resolve DNS queries for the LLM proxy system.
         """
         reply = request.reply()
-        qname = str(request.q.qname).lower()
+        qname = str(request.q.qname)
 
-        if qname.endswith('.llm.local.'):
-            qname = qname[:-1]
+        # Handle case-insensitive domain matching but preserve case for data
+        if qname.lower().endswith('.llm.local.'):
+            qname = qname[:-1]  # Remove trailing dot
 
         logger.info(f"Received query: {qname}")
 
-        if qname.startswith('msg.'):
-            return self._handle_message_chunk(request, reply, qname)
-        elif qname.startswith('get.'):
+        qname_lower = qname.lower()
+        if qname_lower.startswith('msg.'):
+            return self._handle_message_chunk(request, reply, qname, handler)
+        elif qname_lower.startswith('get.'):
             return self._handle_response_request(request, reply, qname)
         else:
             logger.warning(f"Unknown query type: {qname}")
             return reply
 
-    def _handle_message_chunk(self, request, reply, qname):
+    def _handle_message_chunk(self, request, reply, qname, handler=None):
         """Handle incoming message chunks."""
         session_id, complete_data = self.chunker.process_chunk_query(qname)
 
@@ -58,12 +62,45 @@ class LLMDNSResolver(BaseResolver):
         if complete_data is not None:
             logger.info(f"Complete message received for session {session_id}")
 
+            # Get client IP for conversation tracking
+            client_ip = handler.client_address[0] if handler and hasattr(handler, 'client_address') else "unknown"
+
             try:
                 decrypted_message = self.crypto.decrypt(complete_data)
                 logger.info(f"Decrypted message: {decrypted_message[:100]}...")
 
-                llm_response = self.llm.process_message_sync(decrypted_message)
-                logger.info(f"LLM response: {llm_response[:100]}...")
+                # Check for special commands
+                if decrypted_message.lower().strip() in ['/clear', '/reset', '/new']:
+                    # Clear conversation history
+                    with self.lock:
+                        self.conversations[client_ip] = []
+                    llm_response = "Conversation history cleared. Starting fresh!"
+                    logger.info(f"Cleared conversation history for client {client_ip}")
+                else:
+                    # Get conversation history for this client
+                    with self.lock:
+                        conversation_history = self.conversations.get(client_ip, []).copy()
+                        logger.info(f"Client {client_ip} has {len(conversation_history)} messages in history")
+
+                    # Process message with conversation context
+                    llm_response = self.llm.process_message_sync(decrypted_message,
+                                                               conversation_history=conversation_history)
+                    logger.info(f"LLM response: {llm_response[:100]}...")
+
+                    # Update conversation history
+                    with self.lock:
+                        if client_ip not in self.conversations:
+                            self.conversations[client_ip] = []
+
+                        # Add user message and assistant response to history
+                        self.conversations[client_ip].extend([
+                            {"role": "user", "content": decrypted_message},
+                            {"role": "assistant", "content": llm_response}
+                        ])
+
+                        # Keep only last 20 messages (10 exchanges) to prevent context overflow
+                        if len(self.conversations[client_ip]) > 20:
+                            self.conversations[client_ip] = self.conversations[client_ip][-20:]
 
                 encrypted_response = self.crypto.encrypt(llm_response)
 

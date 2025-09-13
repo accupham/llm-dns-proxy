@@ -71,7 +71,7 @@ class DNSChunker:
                 del self.pending_messages[session_id]
                 del self.total_chunks[session_id]
 
-                return session_id, base64.b64decode(complete_data.encode())
+                return session_id, base64.b64decode(complete_data)
 
             return session_id, None
 

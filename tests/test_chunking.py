@@ -14,7 +14,7 @@ class TestDNSChunker:
 
         chunks = chunker.create_chunks(data, "test123")
         assert len(chunks) == 1
-        assert chunks[0].startswith("msg.test123.0.1.")
+        assert chunks[0].startswith("m.test123.0.1.")
         assert chunks[0].endswith(".llm.local")
 
     def test_create_chunks_large_message(self):
@@ -26,7 +26,7 @@ class TestDNSChunker:
 
         for i, chunk in enumerate(chunks):
             parts = chunk.split('.')
-            assert parts[0] == "msg"
+            assert parts[0] == "m"
             assert parts[1] == "test123"
             assert parts[2] == str(i)
             assert parts[3] == str(len(chunks))
@@ -76,8 +76,8 @@ class TestDNSChunker:
 
         invalid_queries = [
             "invalid.query",
-            "msg.session.invalid.total.data.llm.local",
-            "msg.session.0.invalid.data.llm.local",
+            "m.session.invalid.total.data.llm.local",
+            "m.session.0.invalid.data.llm.local",
             "wrong.session.0.1.data.llm.local",
             "msg.session.0.1.data.wrong.domain",
         ]
@@ -103,7 +103,7 @@ class TestDNSChunker:
 
     def test_parse_response_query_valid(self):
         chunker = DNSChunker()
-        query = "get.session123.5.llm.local"
+        query = "g.session123.5.llm.local"
 
         session_id, chunk_index = chunker.parse_response_query(query)
         assert session_id == "session123"
@@ -114,10 +114,10 @@ class TestDNSChunker:
 
         invalid_queries = [
             "invalid.query",
-            "get.session.invalid.llm.local",
+            "g.session.invalid.llm.local",
             "wrong.session.0.llm.local",
-            "get.session.0.wrong.domain",
-            "get.session123.5.llm.wrong",
+            "g.session.0.wrong.domain",
+            "g.session123.5.llm.wrong",
         ]
 
         for query in invalid_queries:

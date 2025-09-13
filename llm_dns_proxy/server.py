@@ -46,13 +46,13 @@ class LLMDNSResolver(BaseResolver):
         logger.info(f"Received query: {qname}")
 
         qname_lower = qname.lower()
-        if qname_lower.startswith('msg.'):
+        if qname_lower.startswith('m.'):  # message chunks
             return self._handle_message_chunk(request, reply, qname, handler)
-        elif qname_lower.startswith('get.'):
+        elif qname_lower.startswith('g.'):  # get response chunks
             return self._handle_response_request(request, reply, qname)
-        elif qname_lower.startswith('version.'):
+        elif qname_lower.startswith('v.'):  # version info
             return self._handle_version_request(request, reply)
-        elif qname_lower.startswith('test.'):
+        elif qname_lower.startswith('t.'):  # test connection
             return self._handle_test_request(request, reply)
         else:
             logger.warning(f"Unknown query type: {qname}")

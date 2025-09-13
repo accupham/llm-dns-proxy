@@ -6,7 +6,61 @@ Handles the splitting of encrypted messages into DNS-compatible chunks.
 import base64
 import math
 import uuid
+import zlib
 from typing import List, Dict, Optional, Tuple
+
+
+def base36encode(number: int) -> str:
+    """Convert integer to base36 string using 0-9a-z"""
+    if number == 0:
+        return '0'
+
+    alphabet = '0123456789abcdefghijklmnopqrstuvwxyz'
+    result = ''
+    while number:
+        number, remainder = divmod(number, 36)
+        result = alphabet[remainder] + result
+    return result
+
+
+def base36decode(string: str) -> int:
+    """Convert base36 string to integer"""
+    return int(string, 36)
+
+
+def bytes_to_base36(data: bytes) -> str:
+    """Convert bytes to base36 string with length prefix"""
+    # Convert bytes to big integer
+    number = int.from_bytes(data, byteorder='big')
+    encoded = base36encode(number)
+    # Prefix with original length to preserve it during decode
+    length_prefix = base36encode(len(data))
+    return f"{length_prefix}z{encoded}"
+
+
+def base36_to_bytes(string: str) -> bytes:
+    """Convert base36 string back to bytes"""
+    # Split at 'z' separator
+    parts = string.split('z', 1)
+    if len(parts) != 2:
+        raise ValueError("Invalid base36 format")
+
+    length_str, data_str = parts
+    original_length = base36decode(length_str)
+    number = base36decode(data_str)
+
+    # Convert back to bytes with original length
+    if number == 0:
+        return b'\x00' * original_length
+
+    byte_length = (number.bit_length() + 7) // 8
+    result = number.to_bytes(byte_length, byteorder='big')
+
+    # Pad with leading zeros if needed
+    if len(result) < original_length:
+        result = b'\x00' * (original_length - len(result)) + result
+
+    return result
 
 
 class DNSChunker:
@@ -29,34 +83,36 @@ class DNSChunker:
     def create_chunks(self, encrypted_data: bytes, session_id: str = None) -> List[str]:
         """
         Split encrypted data into DNS-compatible chunks with proper qname length validation.
-        Returns list of DNS query strings in format: msg.sessionid.index.total.data1.data2.llm.local
+        Returns list of DNS query strings in format: m.sessionid.index.total.data1.data2.llm.local
         """
         if session_id is None:
-            session_id = str(uuid.uuid4().hex)[:8]  # Keep session ID short (8 hex chars)
+            # Use 1-char base36 session ID for max 10 concurrent users (0-9)
+            # Keep it simple with just digits for better readability
+            session_id = str(uuid.uuid4().int % 10)
 
-        # Convert Fernet token (URL-safe base64 bytes) to DNS-safe base32 for labels
-        # Fernet tokens contain URL-safe base64 characters including _ which breaks DNS
-        data_b32 = base64.b32encode(encrypted_data).decode().rstrip('=').lower()
+        # Convert Fernet token to DNS-safe base36 for labels
+        # Base36 uses only 0-9a-z which is DNS-safe and more efficient than base32
+        data_b36 = bytes_to_base36(encrypted_data)
 
-        # Calculate base qname overhead: "msg." + sessionid + "." + index + "." + total + "." + ".llm.local"
-        # Estimate worst case: msg.12345678.999.999..llm.local = ~30 chars + dots
-        base_overhead = 35  # Conservative estimate
+        # Calculate base qname overhead: "m." + sessionid + "." + index + "." + total + "." + ".llm.local"
+        # Worst case: m.9.999.999..llm.local = ~20 chars + dots
+        base_overhead = 25  # Conservative estimate with single-char commands and session IDs
 
         max_data_per_chunk = self.MAX_DNS_QNAME_LENGTH - base_overhead
-        total_chunks = math.ceil(len(data_b32) / max_data_per_chunk)
+        total_chunks = math.ceil(len(data_b36) / max_data_per_chunk)
 
         chunks = []
         for i in range(total_chunks):
             start = i * max_data_per_chunk
-            end = min(start + max_data_per_chunk, len(data_b32))
-            chunk_data = data_b32[start:end]
+            end = min(start + max_data_per_chunk, len(data_b36))
+            chunk_data = data_b36[start:end]
 
             # Split chunk_data into multiple labels if needed
             data_labels = self._split_data_into_labels(chunk_data, self.MAX_DATA_LABEL_LENGTH)
 
-            # Build query with multiple data labels
+            # Build query with multiple data labels (m = message)
             data_part = '.'.join(data_labels)
-            query = f"msg.{session_id}.{i}.{total_chunks}.{data_part}.llm.local"
+            query = f"m.{session_id}.{i}.{total_chunks}.{data_part}.llm.local"
 
             # Validate qname length
             if len(query) > self.MAX_DNS_QNAME_LENGTH:
@@ -66,7 +122,7 @@ class DNSChunker:
                     chunk_data = chunk_data[:reduced_data_len]
                     data_labels = self._split_data_into_labels(chunk_data, self.MAX_DATA_LABEL_LENGTH)
                     data_part = '.'.join(data_labels)
-                    query = f"msg.{session_id}.{i}.{total_chunks}.{data_part}.llm.local"
+                    query = f"m.{session_id}.{i}.{total_chunks}.{data_part}.llm.local"
                 else:
                     raise ValueError(f"Cannot fit data into DNS qname constraints for chunk {i}")
 
@@ -80,10 +136,10 @@ class DNSChunker:
         Returns (session_id, None) if still waiting for more chunks.
         Returns (None, None) if invalid query.
 
-        Expected format: msg.sessionid.index.total.data1.data2...dataN.llm.local
+        Expected format: m.sessionid.index.total.data1.data2...dataN.llm.local
         """
         parts = query.split('.')
-        if len(parts) < 6 or parts[0] != 'msg' or parts[-2:] != ['llm', 'local']:
+        if len(parts) < 6 or parts[0] != 'm' or parts[-2:] != ['llm', 'local']:
             return None, None
 
         try:
@@ -109,11 +165,8 @@ class DNSChunker:
                 del self.pending_messages[session_id]
                 del self.total_chunks[session_id]
 
-                # Add padding back and decode using base32 (uppercase for proper base32)
-                complete_data_upper = complete_data.upper()
-                padding_needed = (8 - len(complete_data_upper) % 8) % 8
-                padded_data = complete_data_upper + '=' * padding_needed
-                return session_id, base64.b32decode(padded_data)
+                # Decode using base36
+                return session_id, base36_to_bytes(complete_data)
 
             return session_id, None
 
@@ -123,7 +176,7 @@ class DNSChunker:
     def create_response_chunks(self, encrypted_data: bytes, session_id: str) -> Dict[int, str]:
         """
         Create response chunks as TXT records indexed by chunk number.
-        Client will query get.sessionid.index.llm.local to retrieve chunks.
+        Client will query g.sessionid.index.llm.local to retrieve chunks.
         """
         # Fernet tokens are already URL-safe base64 bytes, just decode to string for TXT
         # No double-encoding needed - TXT records can handle the Fernet format directly
@@ -145,11 +198,11 @@ class DNSChunker:
 
     def parse_response_query(self, query: str) -> Tuple[Optional[str], Optional[int]]:
         """
-        Parse response retrieval query: get.sessionid.index.llm.local
+        Parse response retrieval query: g.sessionid.index.llm.local
         Returns (session_id, chunk_index) or (None, None) if invalid.
         """
         parts = query.split('.')
-        if len(parts) != 5 or parts[0] != 'get' or parts[-2:] != ['llm', 'local']:
+        if len(parts) != 5 or parts[0] != 'g' or parts[-2:] != ['llm', 'local']:
             return None, None
 
         try:

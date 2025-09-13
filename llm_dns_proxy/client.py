@@ -107,7 +107,7 @@ class DNSLLMClient:
             show_spinner: Whether to show spinner during processing
             streaming: Whether to display streaming response (default True)
         """
-        session_id = str(uuid.uuid4())[:8]
+        session_id = str(uuid.uuid4().int % 10)  # Single digit 0-9
         spinner = None
 
         try:
@@ -234,7 +234,7 @@ class DNSLLMClient:
         max_chunks = 50  # Reasonable limit
 
         while chunk_index < max_chunks:
-            query = f"get.{session_id}.{chunk_index}.llm.local"
+            query = f"g.{session_id}.{chunk_index}.llm.local"
             response = self._send_dns_query(query)
 
             if response == "NOT_FOUND":
@@ -279,7 +279,7 @@ class DNSLLMClient:
             max_retries = 10
 
             while chunk_index < max_retries:
-                query = f"get.{session_id}.{chunk_index}.llm.local"
+                query = f"g.{session_id}.{chunk_index}.llm.local"
                 response = self._send_dns_query(query)
 
                 if response == "NOT_FOUND":
@@ -329,7 +329,7 @@ class DNSLLMClient:
         """Get the server version and model info."""
         import json
         try:
-            version_query = "version.llm.local"
+            version_query = "v.llm.local"
             response = self._send_dns_query(version_query)
             if response and response != "NOT_FOUND":
                 # Handle quoted TXT records
@@ -350,7 +350,7 @@ class DNSLLMClient:
         """Test basic connectivity to the DNS server."""
         try:
             # Try a simple DNS query to test connectivity
-            test_query = "test.connection.llm.local"
+            test_query = "t.llm.local"
             question = DNSQuestion(test_query, QTYPE.TXT)
             header = DNSHeader(id=random.randint(1, 65535))
             q = DNSRecord(header, q=question)

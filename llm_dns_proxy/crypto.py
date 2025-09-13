@@ -4,6 +4,7 @@ Encryption utilities using Fernet for secure message transport.
 
 import base64
 import os
+import zlib
 from cryptography.fernet import Fernet
 
 
@@ -27,13 +28,17 @@ class CryptoManager:
         return Fernet.generate_key()
 
     def encrypt(self, message: str) -> bytes:
-        """Encrypt a message and return raw Fernet token bytes."""
-        # Fernet.encrypt() already returns URL-safe base64 bytes, no need to double-encode
-        encrypted = self.fernet.encrypt(message.encode())
+        """Encrypt a message with compression and return raw Fernet token bytes."""
+        # Compress first for better efficiency
+        compressed = zlib.compress(message.encode(), level=9)
+        # Fernet.encrypt() returns URL-safe base64 bytes
+        encrypted = self.fernet.encrypt(compressed)
         return encrypted
 
     def decrypt(self, encrypted_data: bytes) -> str:
-        """Decrypt raw Fernet token bytes."""
-        # Direct decryption of Fernet token (already in proper format)
+        """Decrypt and decompress raw Fernet token bytes."""
+        # Decrypt the Fernet token
         decrypted = self.fernet.decrypt(encrypted_data)
-        return decrypted.decode()
+        # Decompress the result
+        decompressed = zlib.decompress(decrypted)
+        return decompressed.decode()

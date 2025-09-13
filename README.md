@@ -6,10 +6,13 @@ A DNS-based LLM proxy system that tunnels encrypted chat messages through DNS TX
 
 - End-to-end encryption using Fernet (symmetric encryption)
 - DNS TXT record transport for covert communication
+- DNS-safe base64url encoding to prevent query failures
 - Automatic message chunking to handle DNS size limitations
 - Session-based message handling with unique session IDs
 - CLI client and server for easy deployment and usage
 - OpenAI integration for LLM processing
+- **Web search capabilities** via Perplexity AI tool integration
+- Real-time tool calling for web searches and current information
 
 ## How It Works
 
@@ -43,11 +46,35 @@ export OPENAI_API_KEY="your-openai-api-key"
 # Optional: Custom OpenAI base URL (for LocalAI, Ollama, etc.)
 export OPENAI_BASE_URL="https://api.openai.com/v1"
 
-# Optional: OpenAI model (defaults to gpt-3.5-turbo)
+# Optional: OpenAI model (defaults to gpt-4o)
 export OPENAI_MODEL="gpt-4"
 
 # Optional: Custom encryption key (will generate one if not provided)
 export LLM_PROXY_KEY="your-base64-encryption-key"
+
+# Optional: Perplexity API key for web search capabilities
+export PERPLEXITY_API_KEY="your-perplexity-api-key"
+```
+
+### Web Search Setup
+
+To enable web search capabilities via Perplexity AI:
+
+1. **Get Perplexity API Key**: Visit [Perplexity AI](https://www.perplexity.ai/) to obtain an API key
+2. **Set Environment Variable**: `export PERPLEXITY_API_KEY="your-perplexity-api-key"`
+3. **Use in Conversations**: The LLM will automatically use the `web_search` tool when needed
+
+Example usage:
+```bash
+You: "What's the weather like in New York today?"
+Assistant: I'll search for current weather information...
+[Uses web_search tool automatically]
+```
+
+You can also explicitly request web searches:
+```bash
+You: "Use web search to find the latest news about AI developments"
+Assistant: [Searches the web and provides current information]
 ```
 
 ### Supported Providers
@@ -117,6 +144,7 @@ uv pip install -e .
 # Set environment variables
 export OPENAI_API_KEY="your-api-key"
 export LLM_PROXY_KEY="your-encryption-key"
+export PERPLEXITY_API_KEY="your-perplexity-api-key"  # Optional: for web search
 
 # Start server on port 53 (requires root/sudo)
 sudo python -m llm_dns_proxy.cli server --host 0.0.0.0 --port 53
@@ -211,6 +239,7 @@ User=llm-proxy
 WorkingDirectory=/opt/llm-dns-proxy
 Environment=OPENAI_API_KEY=your-api-key-here
 Environment=LLM_PROXY_KEY=your-encryption-key-here
+Environment=PERPLEXITY_API_KEY=your-perplexity-api-key-here
 ExecStart=/usr/local/bin/python -m llm_dns_proxy.cli server --host 0.0.0.0 --port 53
 Restart=always
 RestartSec=3
@@ -260,7 +289,28 @@ python -m llm_dns_proxy.cli client chat -v
 
 # Verbose mode with single message
 python -m llm_dns_proxy.cli client chat -v -m "Hello, how are you?"
+
+# Examples with web search (requires PERPLEXITY_API_KEY)
+python -m llm_dns_proxy.cli client chat -m "What's the latest news about AI?"
+python -m llm_dns_proxy.cli client chat -m "Search for current weather in Tokyo"
+python -m llm_dns_proxy.cli client chat -m "Find recent updates on cryptocurrency prices"
 ```
+
+### Web Search Features
+
+When `PERPLEXITY_API_KEY` is configured, the system supports:
+
+- **Automatic Web Search**: The AI automatically decides when to search the web for current information
+- **Real-time Data**: Get up-to-date information on news, weather, prices, etc.
+- **Source-backed Responses**: Web search results include citations and sources
+- **Tool Call Integration**: Seamless integration using OpenAI's function calling system
+
+Examples of queries that trigger web search:
+- "What's the current stock price of Apple?"
+- "Latest news about space exploration"
+- "Today's weather in London"
+- "Recent developments in quantum computing"
+- "Current exchange rate USD to EUR"
 
 ### Test Connection
 
@@ -340,6 +390,20 @@ curl -H "Authorization: Bearer $OPENAI_API_KEY" https://api.openai.com/v1/models
 
 # For custom endpoints
 curl -H "Authorization: Bearer $OPENAI_API_KEY" $OPENAI_BASE_URL/models
+```
+
+**5. Web search not working**
+```bash
+# Test Perplexity API key
+curl -H "Authorization: Bearer $PERPLEXITY_API_KEY" https://api.perplexity.ai/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"sonar-pro","messages":[{"role":"user","content":"test"}]}'
+
+# Check if web_search tool is available (should show 1 tool)
+# Look for "Tools available: 1" in server logs when starting
+
+# Verify environment variable is set
+echo $PERPLEXITY_API_KEY
 ```
 
 ### Debug Mode

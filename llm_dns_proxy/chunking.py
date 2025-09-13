@@ -25,7 +25,8 @@ class DNSChunker:
         if session_id is None:
             session_id = str(uuid.uuid4())[:8]
 
-        data_b64 = base64.b64encode(encrypted_data).decode()
+        # Use DNS-safe base64url encoding (no + or / characters)
+        data_b64 = base64.urlsafe_b64encode(encrypted_data).decode().rstrip('=')
 
         max_data_per_chunk = self.MAX_DNS_LABEL_LENGTH - 10
         total_chunks = math.ceil(len(data_b64) / max_data_per_chunk)
@@ -71,7 +72,10 @@ class DNSChunker:
                 del self.pending_messages[session_id]
                 del self.total_chunks[session_id]
 
-                return session_id, base64.b64decode(complete_data)
+                # Add padding back and decode using urlsafe_b64decode
+                padding_needed = (4 - len(complete_data) % 4) % 4
+                padded_data = complete_data + '=' * padding_needed
+                return session_id, base64.urlsafe_b64decode(padded_data)
 
             return session_id, None
 
@@ -83,6 +87,7 @@ class DNSChunker:
         Create response chunks as TXT records indexed by chunk number.
         Client will query get.sessionid.index.llm.local to retrieve chunks.
         """
+        # Keep standard base64 for TXT records (they're more forgiving)
         data_b64 = base64.b64encode(encrypted_data).decode()
         max_chunk_size = self.MAX_DNS_RECORD_LENGTH - 50
 

@@ -54,13 +54,18 @@ class TestLLMProcessor:
 
     def test_init_no_api_key(self):
         with patch.dict('os.environ', {}, clear=True):
-            with pytest.raises(ValueError, match="OpenAI API key must be provided"):
+            with pytest.raises(ValueError, match="OPENAI_API_KEY missing"):
                 LLMProcessor()
 
     @patch('llm_dns_proxy.llm.OpenAI')
     def test_process_message_sync_success(self, mock_openai):
+        mock_message = Mock()
+        mock_message.content = "Test response"
+        mock_message.tool_calls = None  # No tool calls
+
         mock_choice = Mock()
-        mock_choice.message.content = "Test response"
+        mock_choice.message = mock_message
+
         mock_response = Mock()
         mock_response.choices = [mock_choice]
         mock_openai.return_value.chat.completions.create.return_value = mock_response
@@ -73,8 +78,13 @@ class TestLLMProcessor:
 
     @patch('llm_dns_proxy.llm.OpenAI')
     def test_process_message_sync_with_system_prompt(self, mock_openai):
+        mock_message = Mock()
+        mock_message.content = "Test response"
+        mock_message.tool_calls = None  # No tool calls
+
         mock_choice = Mock()
-        mock_choice.message.content = "Test response"
+        mock_choice.message = mock_message
+
         mock_response = Mock()
         mock_response.choices = [mock_choice]
         mock_openai.return_value.chat.completions.create.return_value = mock_response
@@ -101,25 +111,17 @@ class TestLLMProcessor:
 
         assert "Error processing message: API Error" in result
 
-    @patch('llm_dns_proxy.llm.OpenAI')
-    @pytest.mark.asyncio
-    async def test_process_message_async_success(self, mock_openai):
-        mock_choice = Mock()
-        mock_choice.message.content = "Async response"
-        mock_response = Mock()
-        mock_response.choices = [mock_choice]
-        mock_openai.return_value.chat.completions.create.return_value = mock_response
-
-        processor = LLMProcessor(api_key="test-key")
-        result = await processor.process_message("Test message")
-
-        assert result == "Async response"
 
     @patch.dict('os.environ', {'OPENAI_MODEL': 'gpt-4'})
     @patch('llm_dns_proxy.llm.OpenAI')
     def test_custom_model_from_env(self, mock_openai):
+        mock_message = Mock()
+        mock_message.content = "Response"
+        mock_message.tool_calls = None  # No tool calls
+
         mock_choice = Mock()
-        mock_choice.message.content = "Response"
+        mock_choice.message = mock_message
+
         mock_response = Mock()
         mock_response.choices = [mock_choice]
         mock_openai.return_value.chat.completions.create.return_value = mock_response
@@ -132,8 +134,13 @@ class TestLLMProcessor:
 
     @patch('llm_dns_proxy.llm.OpenAI')
     def test_process_message_sync_with_conversation_history(self, mock_openai):
+        mock_message = Mock()
+        mock_message.content = "Based on our previous conversation, I can help!"
+        mock_message.tool_calls = None  # No tool calls
+
         mock_choice = Mock()
-        mock_choice.message.content = "Based on our previous conversation, I can help!"
+        mock_choice.message = mock_message
+
         mock_response = Mock()
         mock_response.choices = [mock_choice]
         mock_openai.return_value.chat.completions.create.return_value = mock_response

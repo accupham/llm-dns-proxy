@@ -7,7 +7,7 @@ import os
 
 def get_dns_suffix() -> str:
     """Get the DNS suffix from environment variable or return default."""
-    return os.getenv('LLM_DNS_SUFFIX', '_sonos._tcp.local')
+    return os.getenv('LLM_DNS_SUFFIX', '_sonos._udp.local')
 
 
 def get_dns_suffix_parts() -> list:

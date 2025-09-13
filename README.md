@@ -4,25 +4,29 @@
 
 This project exploits a fundamental oversight in network restrictions: while most traffic gets blocked until you authenticate or pay, DNS queries almost always work. That "Sign in to continue" page on airplane WiFi? It still needs DNS to load. This tool tunnels encrypted LLM conversations through that same DNS channel for free, unrestricted access.
 
-The technique, known as DNS tunneling, is an old school hack inspired by tools like [iodine](https://github.com/yarrick/iodine) that have been smuggling data through DNS for years. This implementation adapts the classic approach for the AI era: masking your conversations as mundane DNS lookups, chunking and encrypting messages across multiple queries that sail right through captive portals, corporate firewalls, and network filters. Perfect for when you need AI access but the network wants your credit card first.
+The technique, known as DNS tunneling, is an old school hack inspired by tools like [iodine](https://github.com/yarrick/iodine). This implementation adapts the classic approach for the AI era: masking your conversations as mundane DNS lookups, chunking and encrypting messages across multiple queries that sail right through captive portals, corporate firewalls, and network filters. Perfect for when you need AI access but the network wants your credit card first.
 
 
 ## Demo
 
 What it looks like to an outside observer:
 ```bash
-# Network admin sees innocent DNS queries
-dig msg.abc123.1.2.SGVsbG8gV29ybGQ.llm.example.com TXT
-dig get.abc123.1.llm.example.com TXT
+# Network admin sees innocent DNS queries that appear as device discovery traffic
+dig m.5.0.1.SGVsbG8gV29ybGQ._sonos._udp.local TXT
+dig g.5.0._sonos._udp.local TXT
 ```
 
 What's actually happening:
 ```bash
-You: "What's the weather in Tokyo?"
-AI: "Currently 22°C and sunny in Tokyo, with light winds..."
+You: "I'm landing at Tokyo Narita in 30 minutes. Is my connecting flight JAL 316 to Seoul delayed?"
+AI: "I found current flight information for JAL 316 from Tokyo Narita (NRT) to Seoul Gimpo (GMP).
+     According to live flight data, JAL 316 scheduled for departure at 15:45 JST is currently
+     showing an on-time status with no delays reported. The flight typically departs from
+     Terminal 2 at Narita. I recommend checking the airport monitors upon arrival for any
+     last-minute gate changes."
 ```
 
-The conversation is fully encrypted and split across multiple DNS queries that look like routine network activity.
+The conversation is fully encrypted and split across multiple DNS queries that look like routine network activity - even bypassing airplane WiFi restrictions to get you real-time flight information.
 
 ## Features
 
@@ -31,26 +35,27 @@ The conversation is fully encrypted and split across multiple DNS queries that l
 - **Automatic chunking** - handles message size limitations transparently
 - **Token streaming** - receive LLM responses in real-time, chunk by chunk
 - **Session persistence** - maintains conversation context across requests
-- **Multiple LLM providers** - OpenAI, LocalAI, Ollama, or any OpenAI-compatible API
+- **Multiple LLM providers** - OpenAI, Ollama, or any OpenAI-compatible API (ie: vLLM, OpenRouter, etc)
 - **Web search integration** - real-time information via Perplexity AI
 - **Production deployment** - works anywhere DNS resolution is available
+- **Traffic camouflage** - configurable DNS suffixes to blend with legitimate network traffic
 - **Simple architecture** - client/server model with minimal dependencies
 
 ## How It Works
 
 The protocol works by encoding encrypted chat messages as DNS subdomain queries:
 
-1. **Message encryption**: Client encrypts message using Fernet symmetric encryption
-2. **Chunking**: Encrypted data is base64-encoded and split into DNS-compatible segments
-3. **DNS encoding**: Each chunk becomes a subdomain query:
+1. **Message encryption**: Client compresses and encrypts message using Fernet symmetric encryption
+2. **Chunking**: Encrypted data is base36-encoded and split into DNS-compatible segments
+3. **DNS encoding**: Each chunk becomes a subdomain query with configurable suffix:
    ```
-   msg.sessionid.index.total.encrypted_data.llm.yourdomain.com
+   m.5.0.1.encrypted_data._sonos._udp.local
    ```
 4. **Server processing**: DNS server receives queries, reassembles chunks, decrypts, and sends to LLM
 5. **Response encoding**: AI response is encrypted, chunked, and stored as DNS TXT records
 6. **Response retrieval**: Client fetches response chunks via DNS TXT queries:
    ```
-   get.sessionid.chunk_index.llm.yourdomain.com
+   g.5.0._sonos._udp.local
    ```
 7. **Decryption**: Client reassembles chunks and decrypts the final response
 
@@ -86,7 +91,43 @@ export LLM_PROXY_KEY="your-base64-encryption-key"
 
 # Optional: Perplexity API key for web search capabilities
 export PERPLEXITY_API_KEY="your-perplexity-api-key"
+
+# Optional: Custom DNS suffix for traffic camouflage (defaults to _sonos._udp.local)
+export LLM_DNS_SUFFIX="_airplay._tcp.local"
 ```
+
+### Traffic Camouflage
+
+The system uses configurable DNS suffixes to make queries blend with legitimate network traffic:
+
+**Default Configuration:**
+```bash
+# Uses Sonos UDP discovery traffic (default)
+export LLM_DNS_SUFFIX="_sonos._udp.local"
+```
+
+**Popular Camouflage Options:**
+```bash
+# Apple AirPlay device discovery
+export LLM_DNS_SUFFIX="_airplay._tcp.local"
+
+# Spotify Connect discovery
+export LLM_DNS_SUFFIX="_spotify._tcp.local"
+
+# Generic HTTP services
+export LLM_DNS_SUFFIX="_http._tcp.local"
+
+# Corporate network (custom domain)
+export LLM_DNS_SUFFIX="internal.corp.com"
+
+# Home network
+export LLM_DNS_SUFFIX="home.lan"
+```
+
+**Benefits:**
+- **Steganography**: Queries appear as standard device/service discovery
+- **Reduced Suspicion**: Network admins see familiar mDNS/DNS-SD traffic patterns
+- **Flexibility**: Adapt to different network environments
 
 ### Web Search Setup
 
@@ -326,6 +367,13 @@ python -m llm_dns_proxy.cli client chat -v -m "Hello, how are you?"
 python -m llm_dns_proxy.cli client chat -m "What's the latest news about AI?"
 python -m llm_dns_proxy.cli client chat -m "Search for current weather in Tokyo"
 python -m llm_dns_proxy.cli client chat -m "Find recent updates on cryptocurrency prices"
+
+# Examples with custom DNS suffix for camouflage
+LLM_DNS_SUFFIX="_airplay._tcp.local" python -m llm_dns_proxy.cli client chat
+LLM_DNS_SUFFIX="home.lan" python -m llm_dns_proxy.cli client chat
+
+# Real-world airplane WiFi scenario
+python -m llm_dns_proxy.cli client chat -m "I'm landing at Tokyo Narita in 30 minutes. Is my connecting flight JAL 316 to Seoul delayed?"
 ```
 
 ### Web Search Features
@@ -337,12 +385,38 @@ When `PERPLEXITY_API_KEY` is configured, the system supports:
 - **Source-backed Responses**: Web search results include citations and sources
 - **Tool Call Integration**: Seamless integration using OpenAI's function calling system
 
-Examples of queries that trigger web search:
+#### Real-world Example: Flight Information on Airplane WiFi
+
+```bash
+# Scenario: You're on a plane landing in Tokyo, using the restricted WiFi
+You: "I'm landing at Tokyo Narita in 30 minutes. Is my connecting flight JAL 316 to Seoul delayed?"
+
+AI: *Automatically uses web_search tool to check current flight status*
+
+AI: "I found current flight information for JAL 316 from Tokyo Narita (NRT) to Seoul Gimpo (GMP).
+
+According to live flight tracking data:
+- Flight JAL 316 scheduled departure: 15:45 JST
+- Current status: On-time ✅
+- Terminal: 2 (Narita International Airport)
+- Gate: Will be announced 1 hour before departure
+- Aircraft: Boeing 737-800
+- Flight duration: 2h 35m
+
+No delays are currently reported. I recommend heading directly to Terminal 2 upon landing
+and checking the departure boards for your specific gate assignment. Safe travels!"
+
+# The AI accessed real-time flight data through DNS tunneling,
+# bypassing airplane WiFi restrictions entirely
+```
+
+#### Other Examples That Trigger Web Search:
 - "What's the current stock price of Apple?"
 - "Latest news about space exploration"
 - "Today's weather in London"
 - "Recent developments in quantum computing"
 - "Current exchange rate USD to EUR"
+- "Is my train delayed? I'm taking the 3:15 PM Shinkansen from Tokyo to Osaka"
 
 ### Test Connection
 
@@ -487,5 +561,6 @@ pytest tests/test_server.py -v
 ```
 
 
-## See Also
+## Prior Art and Inspiration
 - https://ch.at/
+- iodine

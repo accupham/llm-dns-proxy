@@ -138,6 +138,59 @@ class LLMDNSResolver(BaseResolver):
                     with self.lock:
                         self.response_cache[session_id] = response_chunks
 
+                elif command.startswith('/history'):
+                    # Show conversation history
+                    parts = command.split()
+                    message_count = None
+
+                    # Parse optional message count parameter
+                    if len(parts) > 1:
+                        try:
+                            message_count = int(parts[1])
+                        except ValueError:
+                            llm_response = "Usage: /history [count]\nExample: /history 5 to show last 5 messages[EOS]"
+                            encrypted_response = self.crypto.encrypt(llm_response)
+                            response_chunks = self.chunker.create_response_chunks(encrypted_response, session_id)
+
+                            with self.lock:
+                                self.response_cache[session_id] = response_chunks
+                            return reply
+
+                    with self.lock:
+                        conversation_history = self.conversations.get(client_ip, []).copy()
+
+                    if not conversation_history:
+                        llm_response = ">>> No conversation history found[EOS]"
+                    else:
+                        # Apply message count limit if specified
+                        if message_count is not None:
+                            conversation_history = conversation_history[-message_count:]
+
+                        # Format history for display
+                        history_lines = []
+                        for i, msg in enumerate(conversation_history):
+                            role = "User" if msg["role"] == "user" else "Assistant"
+                            content = msg["content"]
+                            # Truncate very long messages for readability
+                            if len(content) > 200:
+                                content = content[:197] + "..."
+                            history_lines.append(f"{i+1}. {role}: {content}")
+
+                        total_messages = len(self.conversations.get(client_ip, []))
+                        shown_count = len(conversation_history)
+
+                        llm_response = f">>> Chat History (showing {shown_count} of {total_messages} messages):\n\n"
+                        llm_response += "\n\n".join(history_lines) + "[EOS]"
+
+                    logger.info(f"Showed chat history to client {client_ip} ({message_count} messages requested)")
+
+                    # Create response chunks for the history
+                    encrypted_response = self.crypto.encrypt(llm_response)
+                    response_chunks = self.chunker.create_response_chunks(encrypted_response, session_id)
+
+                    with self.lock:
+                        self.response_cache[session_id] = response_chunks
+
                 elif command == '/help':
                     # Show help information
                     help_text = """Available Commands:
@@ -147,12 +200,15 @@ class LLMDNSResolver(BaseResolver):
 /reset          - Same as /clear
 /list           - List all available models (current model marked with *)
 /model <name>   - Switch to a specific model (e.g., /model gpt-4-turbo)
+/history [count]- Show conversation history (optionally limit to last N messages)
 
 Examples:
 • /list                    - See what models are available
 • /model gpt-3.5-turbo    - Switch to GPT-3.5 Turbo
 • /model claude-3-sonnet  - Switch to Claude 3 Sonnet
 • /clear                  - Start a new conversation
+• /history                - Show entire conversation history
+• /history 5              - Show last 5 messages
 
 Current model: """ + self.model_name + "[EOS]"
 

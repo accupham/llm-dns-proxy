@@ -52,6 +52,8 @@ class LLMDNSResolver(BaseResolver):
             return self._handle_response_request(request, reply, qname)
         elif qname_lower.startswith('version.'):
             return self._handle_version_request(request, reply)
+        elif qname_lower.startswith('test.'):
+            return self._handle_test_request(request, reply)
         else:
             logger.warning(f"Unknown query type: {qname}")
             return reply
@@ -215,6 +217,13 @@ Current model: """ + self.model_name + "[EOS]"
         txt_record = TXT(version_response)
         reply.add_answer(RR(request.q.qname, QTYPE.TXT, rdata=txt_record, ttl=60))
         logger.info(f"Served version info: {self.version}, model: {self.model_name}")
+        return reply
+
+    def _handle_test_request(self, request, reply):
+        """Handle connection test requests."""
+        txt_record = TXT("OK")
+        reply.add_answer(RR(request.q.qname, QTYPE.TXT, rdata=txt_record, ttl=60))
+        logger.info("Served connection test request")
         return reply
 
     def _process_streaming_response(self, decrypted_message: str, session_id: str,

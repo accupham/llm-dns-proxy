@@ -1,38 +1,70 @@
-# DNS-based LLM Proxy
+# Tunneling LLM Conversations Through DNS
 
-A DNS-based LLM proxy system that tunnels encrypted chat messages through DNS TXT records, providing a covert channel for AI interactions.
+**What if you could access your favorite LLM from airplane WiFi without paying fees for internet?**
+
+This project exploits a fundamental oversight in network restrictions: while most traffic gets blocked until you authenticate or pay, DNS queries almost always work. That "Sign in to continue" page on airplane WiFi? It still needs DNS to load. This tool tunnels encrypted LLM conversations through that same DNS channel for free, unrestricted access.
+
+The technique, known as DNS tunneling, is an old school hack inspired by tools like [iodine](https://github.com/yarrick/iodine) that have been smuggling data through DNS for years. This implementation adapts the classic approach for the AI era: masking your conversations as mundane DNS lookups, chunking and encrypting messages across multiple queries that sail right through captive portals, corporate firewalls, and network filters. Perfect for when you need AI access but the network wants your credit card first.
+
+
+## Demo
+
+What it looks like to an outside observer:
+```bash
+# Network admin sees innocent DNS queries
+dig msg.abc123.1.2.SGVsbG8gV29ybGQ.llm.example.com TXT
+dig get.abc123.1.llm.example.com TXT
+```
+
+What's actually happening:
+```bash
+You: "What's the weather in Tokyo?"
+AI: "Currently 22°C and sunny in Tokyo, with light winds..."
+```
+
+The conversation is fully encrypted and split across multiple DNS queries that look like routine network activity.
 
 ## Features
 
-- End-to-end encryption using Fernet (symmetric encryption)
-- DNS TXT record transport for covert communication
-- DNS-safe base64url encoding to prevent query failures
-- Automatic message chunking to handle DNS size limitations
-- Session-based message handling with unique session IDs
-- CLI client and server for easy deployment and usage
-- OpenAI integration for LLM processing
-- **Web search capabilities** via Perplexity AI tool integration
-- Real-time tool calling for web searches and current information
+- **End-to-end encryption** using Fernet (AES-128) symmetric encryption
+- **DNS steganography** - conversations hidden in normal-looking DNS queries
+- **Automatic chunking** - handles message size limitations transparently
+- **Token streaming** - receive LLM responses in real-time, chunk by chunk
+- **Session persistence** - maintains conversation context across requests
+- **Multiple LLM providers** - OpenAI, LocalAI, Ollama, or any OpenAI-compatible API
+- **Web search integration** - real-time information via Perplexity AI
+- **Production deployment** - works anywhere DNS resolution is available
+- **Simple architecture** - client/server model with minimal dependencies
 
 ## How It Works
 
-1. Client encrypts message with Fernet encryption
-2. Encrypted data is base64-encoded and split into DNS-compatible chunks
-3. Chunks sent as DNS queries: msg.sessionid.index.total.data.llm.local
-4. Server reassembles, decrypts, and processes with LLM (OpenAI)
-5. Response is encrypted, chunked, and returned via DNS TXT records
-6. Client fetches chunks: get.sessionid.index.llm.local
-7. Client reassembles and decrypts the response
+The protocol works by encoding encrypted chat messages as DNS subdomain queries:
+
+1. **Message encryption**: Client encrypts message using Fernet symmetric encryption
+2. **Chunking**: Encrypted data is base64-encoded and split into DNS-compatible segments
+3. **DNS encoding**: Each chunk becomes a subdomain query:
+   ```
+   msg.sessionid.index.total.encrypted_data.llm.yourdomain.com
+   ```
+4. **Server processing**: DNS server receives queries, reassembles chunks, decrypts, and sends to LLM
+5. **Response encoding**: AI response is encrypted, chunked, and stored as DNS TXT records
+6. **Response retrieval**: Client fetches response chunks via DNS TXT queries:
+   ```
+   get.sessionid.chunk_index.llm.yourdomain.com
+   ```
+7. **Decryption**: Client reassembles chunks and decrypts the final response
+
+To external observers, this appears as standard DNS resolution activity.
+
+# Disclaimer
+This is a proof of concept for educational purposes only. I'm not responsible if you get into trouble using this tool. Use at your own risk and always comply with network policies and terms of service.
 
 ## Installation
 
 ```bash
-# Clone the repository
-git clone <repository-url>
+git clone https://github.com/accupham/llm-dns-proxy
 cd llm-dns-proxy
-
-# Install dependencies
-uv pip install -e .
+uv sync
 ```
 
 ## Configuration
@@ -341,8 +373,7 @@ python -m llm_dns_proxy.cli client test-connection -v
 
 ### Network Security
 - DNS queries are visible to network infrastructure (though encrypted)
-- Consider using DNS over HTTPS (DoH) or DNS over TLS (DoT) for additional transport security
-- Monitor DNS query patterns to avoid detection
+- Some IDS/IPS systems may flag unusual DNS patterns
 
 ### Key Management
 ```bash
@@ -455,6 +486,6 @@ pytest tests/test_llm.py -v
 pytest tests/test_server.py -v
 ```
 
-## License
 
-Educational and research purposes only.
+## See Also
+- https://ch.at/

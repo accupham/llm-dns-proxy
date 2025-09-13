@@ -37,3 +37,27 @@ class CryptoManager:
         # Direct decryption of Fernet token (already in proper format)
         decrypted = self.fernet.decrypt(encrypted_data)
         return decrypted.decode()
+
+
+# # pip install python-fernet  (pure Python)
+# import os
+# from fernet import Fernet  # implements spec-compatible Fernet
+#
+# class CryptoManager:
+#     def __init__(self, key: bytes = None):
+#         if key is None:
+#             key = os.getenv('LLM_PROXY_KEY')
+#             key = key.encode() if key else Fernet.generate_key()
+#         if isinstance(key, str):
+#             key = key.encode()
+#         self.fernet = Fernet(key)
+#
+#     @classmethod
+#     def generate_key(cls) -> bytes:
+#         return Fernet.generate_key()
+#
+#     def encrypt(self, message: str) -> bytes:
+#         return self.fernet.encrypt(message.encode())
+#
+#     def decrypt(self, encrypted_data: bytes) -> str:
+#         return self.fernet.decrypt(encrypted_data).decode()

@@ -82,34 +82,8 @@ class LLMDNSResolver(BaseResolver):
                         conversation_history = self.conversations.get(client_ip, []).copy()
                         logger.info(f"Client {client_ip} has {len(conversation_history)} messages in history")
 
-                    # Process message with conversation context
-                    llm_response = self.llm.process_message_sync(decrypted_message,
-                                                               conversation_history=conversation_history)
-                    logger.info(f"LLM response: {llm_response[:100]}...")
-
-                    # Update conversation history
-                    with self.lock:
-                        if client_ip not in self.conversations:
-                            self.conversations[client_ip] = []
-
-                        # Add user message and assistant response to history
-                        self.conversations[client_ip].extend([
-                            {"role": "user", "content": decrypted_message},
-                            {"role": "assistant", "content": llm_response}
-                        ])
-
-                        # Keep only last 20 messages (10 exchanges) to prevent context overflow
-                        if len(self.conversations[client_ip]) > 20:
-                            self.conversations[client_ip] = self.conversations[client_ip][-20:]
-
-                encrypted_response = self.crypto.encrypt(llm_response)
-
-                response_chunks = self.chunker.create_response_chunks(encrypted_response, session_id)
-
-                with self.lock:
-                    self.response_cache[session_id] = response_chunks
-
-                logger.info(f"Cached {len(response_chunks)} response chunks for session {session_id}")
+                    # Process message with conversation context (streaming)
+                    self._process_streaming_response(decrypted_message, session_id, conversation_history, client_ip)
 
             except Exception as e:
                 logger.error(f"Error processing message: {e}")
@@ -144,6 +118,86 @@ class LLMDNSResolver(BaseResolver):
                 reply.add_answer(RR(request.q.qname, QTYPE.TXT, rdata=txt_record, ttl=60))
 
         return reply
+
+    def _process_streaming_response(self, decrypted_message: str, session_id: str,
+                                  conversation_history: list, client_ip: str):
+        """Process message and handle streaming response by creating incremental chunks."""
+        import threading
+        import time
+
+        def stream_handler():
+            try:
+                complete_response = ""
+                chunk_count = 0
+
+                # Initialize streaming response cache
+                with self.lock:
+                    if session_id not in self.response_cache:
+                        self.response_cache[session_id] = {}
+
+                # Process streaming tokens
+                for token_data in self.llm.process_message_stream(decrypted_message,
+                                                                conversation_history=conversation_history):
+                    if token_data['type'] == 'token':
+                        complete_response += token_data['content']
+
+                        # Create encrypted chunk for this partial response
+                        encrypted_partial = self.crypto.encrypt(complete_response)
+                        partial_chunks = self.chunker.create_response_chunks(encrypted_partial, session_id)
+
+                        # Update cache with current state
+                        with self.lock:
+                            self.response_cache[session_id] = partial_chunks
+
+                        chunk_count += 1
+
+                        # Small delay to prevent overwhelming the system
+                        time.sleep(0.01)
+
+                    elif token_data['type'] == 'complete':
+                        # Final complete response
+                        complete_response = token_data['content']
+                        logger.info(f"LLM response: {complete_response[:100]}...")
+
+                        # Update conversation history
+                        with self.lock:
+                            if client_ip not in self.conversations:
+                                self.conversations[client_ip] = []
+
+                            # Add user message and assistant response to history
+                            self.conversations[client_ip].extend([
+                                {"role": "user", "content": decrypted_message},
+                                {"role": "assistant", "content": complete_response}
+                            ])
+
+                            # Keep only last 20 messages (10 exchanges) to prevent context overflow
+                            if len(self.conversations[client_ip]) > 20:
+                                self.conversations[client_ip] = self.conversations[client_ip][-20:]
+
+                        # Final encrypted response
+                        encrypted_response = self.crypto.encrypt(complete_response)
+                        response_chunks = self.chunker.create_response_chunks(encrypted_response, session_id)
+
+                        with self.lock:
+                            self.response_cache[session_id] = response_chunks
+
+                        logger.info(f"Streaming complete. Final response has {len(response_chunks)} chunks for session {session_id}")
+                        break
+
+            except Exception as e:
+                logger.error(f"Error in streaming handler: {e}")
+                # Create error response
+                error_response = f"Error: {str(e)}"
+                encrypted_error = self.crypto.encrypt(error_response)
+                error_chunks = self.chunker.create_response_chunks(encrypted_error, session_id)
+
+                with self.lock:
+                    self.response_cache[session_id] = error_chunks
+
+        # Start streaming in a separate thread
+        stream_thread = threading.Thread(target=stream_handler)
+        stream_thread.daemon = True
+        stream_thread.start()
 
 
 class LLMDNSServer:

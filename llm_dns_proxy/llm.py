@@ -55,6 +55,186 @@ class LLMProcessor:
 
         return json.dumps({"ok": False, "error": f"Unknown tool: {name}", "args": args})
 
+    def process_message_stream(
+        self,
+        message: str,
+        system_prompt: Optional[str] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        *,
+        temperature: float = 0.7,
+        max_tokens: int = 1200,
+        max_tool_iterations: int = 4
+    ):
+        """
+        Process a message and yield streaming tokens/chunks.
+        Yields either:
+        - {'type': 'token', 'content': str} for text tokens
+        - {'type': 'complete', 'content': str} for the final complete message
+        """
+        messages: List[Dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if conversation_history:
+            messages.extend(conversation_history)
+        messages.append({"role": "user", "content": message})
+
+        base_params = {
+            "model": self.model,
+            "temperature": 1.0 if self.model.startswith("gpt-5") else temperature,
+            "max_completion_tokens": max_tokens,
+            "stream": True
+        }
+
+        tools_enabled_params = dict(base_params)
+        if self.tools:
+            tools_enabled_params["tools"] = self.tools
+            tools_enabled_params["tool_choice"] = "auto"
+
+        seen_calls = set()
+        complete_response = ""
+
+        try:
+            for iteration in range(max_tool_iterations):
+                response_stream = self.client.chat.completions.create(messages=messages, **tools_enabled_params)
+
+                current_content = ""
+                tool_calls = []
+
+                for chunk in response_stream:
+                    if chunk.choices and chunk.choices[0].delta:
+                        delta = chunk.choices[0].delta
+
+                        if delta.content:
+                            current_content += delta.content
+                            complete_response += delta.content
+                            yield {'type': 'token', 'content': delta.content}
+
+                        if delta.tool_calls:
+                            for tool_call in delta.tool_calls:
+                                if len(tool_calls) <= tool_call.index:
+                                    tool_calls.extend([None] * (tool_call.index + 1 - len(tool_calls)))
+                                if tool_calls[tool_call.index] is None:
+                                    tool_calls[tool_call.index] = {
+                                        'id': tool_call.id or '',
+                                        'function': {'name': tool_call.function.name or '', 'arguments': ''}
+                                    }
+                                if tool_call.function.arguments:
+                                    tool_calls[tool_call.index]['function']['arguments'] += tool_call.function.arguments
+
+                if not tool_calls:
+                    yield {'type': 'complete', 'content': complete_response}
+                    return
+
+                messages.append({
+                    "role": "assistant",
+                    "content": current_content,
+                    "tool_calls": [
+                        {
+                            "id": tc['id'],
+                            "type": "function",
+                            "function": {
+                                "name": tc['function']['name'],
+                                "arguments": tc['function']['arguments']
+                            }
+                        } for tc in tool_calls if tc is not None
+                    ]
+                })
+
+                duplicate = False
+                for tc in tool_calls:
+                    if tc is None:
+                        continue
+                    name = tc['function']['name']
+                    raw_args = tc['function']['arguments'] or "{}"
+                    try:
+                        args_obj = json.loads(raw_args) if raw_args else {}
+                    except Exception:
+                        args_obj = {"_raw": raw_args}
+                    canonical_args = json.dumps(args_obj, sort_keys=True)
+                    key = (name, canonical_args)
+
+                    if key in seen_calls:
+                        duplicate = True
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc['id'],
+                            "content": json.dumps({
+                                "ok": False,
+                                "error": "duplicate_tool_call",
+                                "message": "This exact tool+arguments already ran; not re-running.",
+                                "function": name,
+                                "arguments": args_obj
+                            })
+                        })
+                        continue
+
+                    seen_calls.add(key)
+                    result = self._execute_tool(name, raw_args)
+                    if not isinstance(result, str):
+                        result = json.dumps(result)
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc['id'],
+                        "content": result
+                    })
+
+                synth_params = dict(base_params)
+                messages.append({
+                    "role": "system",
+                    "content": "You have received tool results above. Use them to answer. "
+                               "Do not call the same tool with identical arguments again."
+                })
+
+                synth_stream = self.client.chat.completions.create(messages=messages, **synth_params)
+                synth_content = ""
+                synth_tool_calls = []
+
+                for chunk in synth_stream:
+                    if chunk.choices and chunk.choices[0].delta:
+                        delta = chunk.choices[0].delta
+
+                        if delta.content:
+                            synth_content += delta.content
+                            complete_response += delta.content
+                            yield {'type': 'token', 'content': delta.content}
+
+                        if delta.tool_calls:
+                            for tool_call in delta.tool_calls:
+                                if len(synth_tool_calls) <= tool_call.index:
+                                    synth_tool_calls.extend([None] * (tool_call.index + 1 - len(synth_tool_calls)))
+                                if synth_tool_calls[tool_call.index] is None:
+                                    synth_tool_calls[tool_call.index] = {
+                                        'id': tool_call.id or '',
+                                        'function': {'name': tool_call.function.name or '', 'arguments': ''}
+                                    }
+                                if tool_call.function.arguments:
+                                    synth_tool_calls[tool_call.index]['function']['arguments'] += tool_call.function.arguments
+
+                if not synth_tool_calls:
+                    yield {'type': 'complete', 'content': complete_response}
+                    return
+
+                messages.append({
+                    "role": "assistant",
+                    "content": synth_content,
+                    "tool_calls": [
+                        {
+                            "id": tc['id'],
+                            "type": "function",
+                            "function": {
+                                "name": tc['function']['name'],
+                                "arguments": tc['function']['arguments']
+                            }
+                        } for tc in synth_tool_calls if tc is not None
+                    ]
+                })
+
+            yield {'type': 'complete', 'content': complete_response or "Stopped after max tool iterations without a final answer."}
+
+        except Exception as e:
+            yield {'type': 'complete', 'content': f"Error processing message: {e}"}
+
     def process_message_sync(
         self,
         message: str,
@@ -167,7 +347,7 @@ class LLMProcessor:
                 resp2 = self.client.chat.completions.create(messages=messages, **synth_params)
                 msg2 = resp2.choices[0].message
 
-                # If the model answered, we’re done.
+                # If the model answered, we're done.
                 if not getattr(msg2, "tool_calls", None):
                     return msg2.content or ""
 
@@ -187,7 +367,7 @@ class LLMProcessor:
                         } for tc in msg2.tool_calls
                     ]
                 })
-                # Loop continues, and we’ll run the new tool args (if different)
+                # Loop continues, and we'll run the new tool args (if different)
 
             return "Stopped after max tool iterations without a final answer."
 

@@ -94,8 +94,14 @@ class DNSLLMClient:
                 click.echo(f"DNS query error: {e}")
             return None
 
-    def send_message(self, message: str, show_spinner: bool = True) -> Optional[str]:
-        """Send a message to the LLM through DNS and get the response."""
+    def send_message(self, message: str, show_spinner: bool = True, streaming: bool = True) -> Optional[str]:
+        """Send a message to the LLM through DNS and get the response.
+
+        Args:
+            message: The message to send
+            show_spinner: Whether to show spinner during processing
+            streaming: Whether to display streaming response (default True)
+        """
         session_id = str(uuid.uuid4())[:8]
         spinner = None
 
@@ -124,6 +130,107 @@ class DNSLLMClient:
 
             if spinner:
                 spinner.stop()
+
+            if streaming and not self.verbose:
+                return self._handle_streaming_response(session_id)
+            else:
+                return self._handle_traditional_response(session_id, show_spinner)
+
+        finally:
+            if spinner:
+                spinner.stop()
+
+    def _handle_streaming_response(self, session_id: str) -> Optional[str]:
+        """Handle streaming response by polling for partial updates."""
+        import sys
+
+        last_content = ""
+        final_response = None
+
+        # Initial wait for processing to start
+        time.sleep(1)
+
+        while True:
+            response_chunks = self._get_current_response_chunks(session_id)
+
+            if not response_chunks:
+                time.sleep(0.1)
+                continue
+
+            try:
+                current_encrypted = self.chunker.reassemble_response(response_chunks)
+                current_content = self.crypto.decrypt(current_encrypted)
+
+                # Display new content
+                if len(current_content) > len(last_content):
+                    new_content = current_content[len(last_content):]
+                    sys.stdout.write(new_content)
+                    sys.stdout.flush()
+                    last_content = current_content
+
+                    # Check if this looks like a complete response
+                    # Simple heuristic: if content ends with sentence punctuation and hasn't changed for a bit
+                    if current_content.rstrip().endswith(('.', '!', '?', '\n')):
+                        time.sleep(0.5)  # Wait to see if more content comes
+
+                        # Check again
+                        new_chunks = self._get_current_response_chunks(session_id)
+                        if new_chunks:
+                            try:
+                                new_encrypted = self.chunker.reassemble_response(new_chunks)
+                                new_content_check = self.crypto.decrypt(new_encrypted)
+
+                                if new_content_check == current_content:
+                                    # No change, likely complete
+                                    final_response = current_content
+                                    break
+
+                            except Exception:
+                                pass
+
+                time.sleep(0.1)  # Small delay between polls
+
+            except Exception as e:
+                if self.verbose:
+                    click.echo(f"\nError processing streaming response: {e}")
+                time.sleep(0.2)
+                continue
+
+        return final_response
+
+    def _get_current_response_chunks(self, session_id: str) -> dict:
+        """Get current response chunks from server."""
+        response_chunks = {}
+        chunk_index = 0
+        max_chunks = 50  # Reasonable limit
+
+        while chunk_index < max_chunks:
+            query = f"get.{session_id}.{chunk_index}.llm.local"
+            response = self._send_dns_query(query)
+
+            if response == "NOT_FOUND":
+                break
+
+            if response and ':' in response:
+                parts = response.split(':', 2)
+                if len(parts) == 3:
+                    current_index = int(parts[0])
+                    total_chunks = int(parts[1])
+                    response_chunks[current_index] = response
+
+                    if len(response_chunks) >= total_chunks:
+                        break
+
+            chunk_index += 1
+
+        return response_chunks
+
+    def _handle_traditional_response(self, session_id: str, show_spinner: bool) -> Optional[str]:
+        """Handle traditional non-streaming response."""
+        spinner = None
+
+        try:
+            if show_spinner and not self.verbose:
                 spinner = SimpleSpinner("...")
                 spinner.start()
             elif self.verbose:
@@ -257,9 +364,13 @@ def chat(server, port, message, verbose):
     try:
         if message:
             click.echo(f"You: {message}")
-            response = client.send_message(message, show_spinner=not verbose)
-            if response:
+            if not verbose:
+                click.echo("Assistant: ", nl=False)
+            response = client.send_message(message, show_spinner=not verbose, streaming=not verbose)
+            if response and verbose:
                 click.echo(f"Assistant: {response}")
+            elif not verbose:
+                click.echo()  # Add newline after streaming response
         else:
             click.echo("Starting DNS LLM chat. Type 'quit' to exit.")
             click.echo("=" * 50)
@@ -270,9 +381,13 @@ def chat(server, port, message, verbose):
                     if user_input.lower() in ['quit', 'exit']:
                         break
 
-                    response = client.send_message(user_input, show_spinner=not verbose)
-                    if response:
+                    if not verbose:
+                        click.echo("Assistant: ", nl=False)
+                    response = client.send_message(user_input, show_spinner=not verbose, streaming=not verbose)
+                    if response and verbose:
                         click.echo(f"Assistant: {response}")
+                    elif response and not verbose:
+                        click.echo()  # Add newline after streaming response
                     else:
                         click.echo("No response received or error occurred.")
 

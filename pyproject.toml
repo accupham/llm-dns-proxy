@@ -1,0 +1,21 @@
+[project]
+name = "llm-dns-proxy"
+version = "0.1.0"
+description = "DNS-based LLM proxy system that tunnels encrypted chat messages through DNS TXT records"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "dnslib>=0.9.24",
+    "openai>=1.0.0",
+    "cryptography>=41.0.0",
+    "click>=8.0.0",
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0"
+]
+
+[project.scripts]
+llm-dns-proxy = "llm_dns_proxy.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"

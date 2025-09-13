@@ -13,6 +13,7 @@ from .crypto import CryptoManager
 from .chunking import DNSChunker
 from .llm import LLMProcessor
 from .version import get_version_string
+from .config import get_dns_suffix
 
 
 logging.basicConfig(level=logging.INFO)
@@ -40,7 +41,8 @@ class LLMDNSResolver(BaseResolver):
         qname = str(request.q.qname)
 
         # Handle case-insensitive domain matching but preserve case for data
-        if qname.lower().endswith('.llm.local.'):
+        dns_suffix = get_dns_suffix()
+        if qname.lower().endswith(f'.{dns_suffix}.'):
             qname = qname[:-1]  # Remove trailing dot
 
         logger.info(f"Received query: {qname}")

@@ -5,6 +5,8 @@ Tests for DNS message chunking utilities.
 import pytest
 import base64
 from llm_dns_proxy.chunking import DNSChunker
+from llm_dns_proxy.config import get_dns_suffix, format_dns_query
+from .test_utils import dns_suffix_override, get_test_dns_suffix
 
 
 class TestDNSChunker:
@@ -15,7 +17,8 @@ class TestDNSChunker:
         chunks = chunker.create_chunks(data, "test123")
         assert len(chunks) == 1
         assert chunks[0].startswith("m.test123.0.1.")
-        assert chunks[0].endswith(".llm.local")
+        suffix = get_dns_suffix()
+        assert chunks[0].endswith(f".{suffix}")
 
     def test_create_chunks_large_message(self):
         chunker = DNSChunker()
@@ -24,13 +27,14 @@ class TestDNSChunker:
         chunks = chunker.create_chunks(data, "test123")
         assert len(chunks) > 1
 
+        suffix_parts = get_dns_suffix().split('.')
         for i, chunk in enumerate(chunks):
             parts = chunk.split('.')
             assert parts[0] == "m"
             assert parts[1] == "test123"
             assert parts[2] == str(i)
             assert parts[3] == str(len(chunks))
-            assert parts[-2:] == ["llm", "local"]
+            assert parts[-len(suffix_parts):] == suffix_parts
 
     def test_process_chunk_query_single_chunk(self):
         chunker = DNSChunker()
@@ -74,12 +78,13 @@ class TestDNSChunker:
     def test_invalid_chunk_query(self):
         chunker = DNSChunker()
 
+        suffix = get_dns_suffix()
         invalid_queries = [
             "invalid.query",
-            "m.session.invalid.total.data.llm.local",
-            "m.session.0.invalid.data.llm.local",
-            "wrong.session.0.1.data.llm.local",
-            "msg.session.0.1.data.wrong.domain",
+            f"m.session.invalid.total.data.{suffix}",
+            f"m.session.0.invalid.data.{suffix}",
+            f"wrong.session.0.1.data.{suffix}",
+            "m.session.0.1.data.wrong.domain",
         ]
 
         for query in invalid_queries:
@@ -103,7 +108,7 @@ class TestDNSChunker:
 
     def test_parse_response_query_valid(self):
         chunker = DNSChunker()
-        query = "g.session123.5.llm.local"
+        query = format_dns_query("g", "session123", "5")
 
         session_id, chunk_index = chunker.parse_response_query(query)
         assert session_id == "session123"
@@ -112,12 +117,13 @@ class TestDNSChunker:
     def test_parse_response_query_invalid(self):
         chunker = DNSChunker()
 
+        suffix = get_dns_suffix()
         invalid_queries = [
             "invalid.query",
-            "g.session.invalid.llm.local",
-            "wrong.session.0.llm.local",
+            f"g.session.invalid.{suffix}",
+            f"wrong.session.0.{suffix}",
             "g.session.0.wrong.domain",
-            "g.session123.5.llm.wrong",
+            f"g.session123.5.{suffix.split('.')[0]}.wrong",
         ]
 
         for query in invalid_queries:
@@ -162,3 +168,28 @@ class TestDNSChunker:
         session_id, complete_data = chunker.process_chunk_query(chunks1[-1])
         assert session_id == "session1"
         assert complete_data == data1
+
+    def test_configurable_dns_suffix(self):
+        """Test that DNS suffix can be configured via environment variable."""
+        chunker = DNSChunker()
+        data = b"test message"
+
+        # Test with custom suffix
+        with dns_suffix_override("custom.example.com"):
+            chunks = chunker.create_chunks(data, "test")
+            assert len(chunks) == 1
+            assert chunks[0].endswith(".custom.example.com")
+
+            # Test parsing works with custom suffix
+            session_id, complete_data = chunker.process_chunk_query(chunks[0])
+            assert session_id == "test"
+            assert complete_data == data
+
+            # Test response queries with custom suffix
+            query = format_dns_query("g", "session", "0")
+            assert query == "g.session.0.custom.example.com"
+
+        # Test with default suffix
+        chunks_default = chunker.create_chunks(data, "test")
+        default_suffix = get_dns_suffix()
+        assert chunks_default[0].endswith(f".{default_suffix}")

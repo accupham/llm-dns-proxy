@@ -16,6 +16,7 @@ from .crypto import CryptoManager
 #from .native_crypto import CryptoManager
 from .chunking import DNSChunker
 from .version import get_version_string
+from .config import format_dns_query
 
 
 class SimpleSpinner:
@@ -234,7 +235,7 @@ class DNSLLMClient:
         max_chunks = 50  # Reasonable limit
 
         while chunk_index < max_chunks:
-            query = f"g.{session_id}.{chunk_index}.llm.local"
+            query = format_dns_query("g", session_id, chunk_index)
             response = self._send_dns_query(query)
 
             if response == "NOT_FOUND":
@@ -279,7 +280,7 @@ class DNSLLMClient:
             max_retries = 10
 
             while chunk_index < max_retries:
-                query = f"g.{session_id}.{chunk_index}.llm.local"
+                query = format_dns_query("g", session_id, chunk_index)
                 response = self._send_dns_query(query)
 
                 if response == "NOT_FOUND":
@@ -329,7 +330,7 @@ class DNSLLMClient:
         """Get the server version and model info."""
         import json
         try:
-            version_query = "v.llm.local"
+            version_query = format_dns_query("v")
             response = self._send_dns_query(version_query)
             if response and response != "NOT_FOUND":
                 # Handle quoted TXT records
@@ -350,7 +351,7 @@ class DNSLLMClient:
         """Test basic connectivity to the DNS server."""
         try:
             # Try a simple DNS query to test connectivity
-            test_query = "t.llm.local"
+            test_query = format_dns_query("t")
             question = DNSQuestion(test_query, QTYPE.TXT)
             header = DNSHeader(id=random.randint(1, 65535))
             q = DNSRecord(header, q=question)

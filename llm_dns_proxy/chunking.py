@@ -9,6 +9,8 @@ import uuid
 import zlib
 from typing import List, Dict, Optional, Tuple
 
+from .config import get_dns_suffix, get_dns_suffix_parts, format_dns_query, validate_dns_suffix_in_query
+
 
 def base36encode(number: int) -> str:
     """Convert integer to base36 string using 0-9a-z"""
@@ -83,7 +85,7 @@ class DNSChunker:
     def create_chunks(self, encrypted_data: bytes, session_id: str = None) -> List[str]:
         """
         Split encrypted data into DNS-compatible chunks with proper qname length validation.
-        Returns list of DNS query strings in format: m.sessionid.index.total.data1.data2.llm.local
+        Returns list of DNS query strings in format: m.sessionid.index.total.data1.data2.<suffix>
         """
         if session_id is None:
             # Use 1-char base36 session ID for max 10 concurrent users (0-9)
@@ -94,9 +96,10 @@ class DNSChunker:
         # Base36 uses only 0-9a-z which is DNS-safe and more efficient than base32
         data_b36 = bytes_to_base36(encrypted_data)
 
-        # Calculate base qname overhead: "m." + sessionid + "." + index + "." + total + "." + ".llm.local"
-        # Worst case: m.9.999.999..llm.local = ~20 chars + dots
-        base_overhead = 25  # Conservative estimate with single-char commands and session IDs
+        # Calculate base qname overhead: "m." + sessionid + "." + index + "." + total + "." + ".<suffix>"
+        # Worst case with _sonos._tcp.local: m.9.999.999.._sonos._tcp.local = ~35 chars + dots
+        dns_suffix = get_dns_suffix()
+        base_overhead = len(f"m.9.999.999.{dns_suffix}") + 5  # +5 for safety margin
 
         max_data_per_chunk = self.MAX_DNS_QNAME_LENGTH - base_overhead
         total_chunks = math.ceil(len(data_b36) / max_data_per_chunk)
@@ -112,7 +115,7 @@ class DNSChunker:
 
             # Build query with multiple data labels (m = message)
             data_part = '.'.join(data_labels)
-            query = f"m.{session_id}.{i}.{total_chunks}.{data_part}.llm.local"
+            query = format_dns_query("m", session_id, i, total_chunks, data_part)
 
             # Validate qname length
             if len(query) > self.MAX_DNS_QNAME_LENGTH:
@@ -122,7 +125,7 @@ class DNSChunker:
                     chunk_data = chunk_data[:reduced_data_len]
                     data_labels = self._split_data_into_labels(chunk_data, self.MAX_DATA_LABEL_LENGTH)
                     data_part = '.'.join(data_labels)
-                    query = f"m.{session_id}.{i}.{total_chunks}.{data_part}.llm.local"
+                    query = format_dns_query("m", session_id, i, total_chunks, data_part)
                 else:
                     raise ValueError(f"Cannot fit data into DNS qname constraints for chunk {i}")
 
@@ -136,10 +139,10 @@ class DNSChunker:
         Returns (session_id, None) if still waiting for more chunks.
         Returns (None, None) if invalid query.
 
-        Expected format: m.sessionid.index.total.data1.data2...dataN.llm.local
+        Expected format: m.sessionid.index.total.data1.data2...dataN.<suffix>
         """
         parts = query.split('.')
-        if len(parts) < 6 or parts[0] != 'm' or parts[-2:] != ['llm', 'local']:
+        if len(parts) < 6 or parts[0] != 'm' or not validate_dns_suffix_in_query(parts):
             return None, None
 
         try:
@@ -147,8 +150,9 @@ class DNSChunker:
             chunk_index = int(parts[2])
             total_chunks = int(parts[3])
 
-            # Extract data labels (everything between total_chunks and llm.local)
-            data_labels = parts[4:-2]  # Skip 'llm.local' at end
+            # Extract data labels (everything between total_chunks and suffix)
+            suffix_parts = get_dns_suffix_parts()
+            data_labels = parts[4:-len(suffix_parts)]  # Skip suffix at end
             chunk_data = ''.join(data_labels)  # Rejoin data parts
 
             if session_id not in self.pending_messages:
@@ -176,7 +180,7 @@ class DNSChunker:
     def create_response_chunks(self, encrypted_data: bytes, session_id: str) -> Dict[int, str]:
         """
         Create response chunks as TXT records indexed by chunk number.
-        Client will query g.sessionid.index.llm.local to retrieve chunks.
+        Client will query g.sessionid.index.<suffix> to retrieve chunks.
         """
         # Fernet tokens are already URL-safe base64 bytes, just decode to string for TXT
         # No double-encoding needed - TXT records can handle the Fernet format directly
@@ -198,11 +202,13 @@ class DNSChunker:
 
     def parse_response_query(self, query: str) -> Tuple[Optional[str], Optional[int]]:
         """
-        Parse response retrieval query: g.sessionid.index.llm.local
+        Parse response retrieval query: g.sessionid.index.<suffix>
         Returns (session_id, chunk_index) or (None, None) if invalid.
         """
         parts = query.split('.')
-        if len(parts) != 5 or parts[0] != 'g' or parts[-2:] != ['llm', 'local']:
+        suffix_parts = get_dns_suffix_parts()
+        expected_length = 3 + len(suffix_parts)  # g + session_id + index + suffix
+        if len(parts) != expected_length or parts[0] != 'g' or not validate_dns_suffix_in_query(parts):
             return None, None
 
         try:

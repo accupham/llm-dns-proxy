@@ -6,6 +6,8 @@ import socket
 import time
 import uuid
 import random
+import threading
+import sys
 import click
 from typing import Dict, List, Optional
 from dnslib import DNSRecord, QTYPE, DNSQuestion, DNSHeader
@@ -14,14 +16,43 @@ from .crypto import CryptoManager
 from .chunking import DNSChunker
 
 
+class SimpleSpinner:
+    def __init__(self, message="Loading"):
+        self.message = message
+        self.running = False
+        self.thread = None
+        self.spinner_chars = "|/-\\"
+        self.current = 0
+
+    def _spin(self):
+        while self.running:
+            sys.stdout.write(f"\r{self.message} {self.spinner_chars[self.current % len(self.spinner_chars)]}")
+            sys.stdout.flush()
+            self.current += 1
+            time.sleep(0.1)
+        sys.stdout.write("\r" + " " * (len(self.message) + 2) + "\r")
+        sys.stdout.flush()
+
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self._spin)
+        self.thread.start()
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join()
+
+
 class DNSLLMClient:
-    def __init__(self, server_host: str = "127.0.0.1", server_port: int = 5353, crypto_key: bytes = None):
+    def __init__(self, server_host: str = "127.0.0.1", server_port: int = 5353, crypto_key: bytes = None, verbose: bool = False):
         self.server_host = server_host
         self.server_port = server_port
         self.crypto = CryptoManager(crypto_key)
         self.chunker = DNSChunker()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(30.0)
+        self.verbose = verbose
 
     def _send_dns_query(self, query_name: str) -> Optional[str]:
         """Send a DNS query and return the TXT record response."""
@@ -48,70 +79,129 @@ class DNSLLMClient:
             return None
 
         except Exception as e:
-            click.echo(f"DNS query error: {e}")
+            if self.verbose:
+                click.echo(f"DNS query error: {e}")
             return None
 
-    def send_message(self, message: str) -> Optional[str]:
+    def send_message(self, message: str, show_spinner: bool = True) -> Optional[str]:
         """Send a message to the LLM through DNS and get the response."""
         session_id = str(uuid.uuid4())[:8]
-
-        click.echo(f"Encrypting message...")
-        encrypted_data = self.crypto.encrypt(message)
-
-        click.echo(f"Creating message chunks...")
-        chunks = self.chunker.create_chunks(encrypted_data, session_id)
-
-        click.echo(f"Sending {len(chunks)} chunks...")
-        for i, chunk in enumerate(chunks):
-            click.echo(f"Sending chunk {i+1}/{len(chunks)}")
-            response = self._send_dns_query(chunk)
-            if response != "OK":
-                click.echo(f"Warning: Unexpected response for chunk {i+1}: {response}")
-
-        click.echo("Message sent, waiting for processing...")
-        time.sleep(2)
-
-        click.echo("Retrieving response chunks...")
-        response_chunks = {}
-        chunk_index = 0
-        max_retries = 10
-
-        while chunk_index < max_retries:
-            query = f"get.{session_id}.{chunk_index}.llm.local"
-            response = self._send_dns_query(query)
-
-            if response == "NOT_FOUND":
-                if chunk_index == 0:
-                    time.sleep(1)
-                    continue
-                else:
-                    break
-
-            if response and ':' in response:
-                parts = response.split(':', 2)
-                if len(parts) == 3:
-                    current_index = int(parts[0])
-                    total_chunks = int(parts[1])
-                    response_chunks[current_index] = response
-
-                    if len(response_chunks) >= total_chunks:
-                        break
-
-            chunk_index += 1
-
-        if not response_chunks:
-            click.echo("No response received from server")
-            return None
-
-        click.echo(f"Received {len(response_chunks)} response chunks")
+        spinner = None
 
         try:
-            complete_encrypted_response = self.chunker.reassemble_response(response_chunks)
-            decrypted_response = self.crypto.decrypt(complete_encrypted_response)
-            return decrypted_response
-        except Exception as e:
-            click.echo(f"Error decrypting response: {e}")
-            return None
+            if self.verbose:
+                click.echo(f"Encrypting message...")
+            encrypted_data = self.crypto.encrypt(message)
+
+            if self.verbose:
+                click.echo(f"Creating message chunks...")
+            chunks = self.chunker.create_chunks(encrypted_data, session_id)
+
+            if show_spinner and not self.verbose:
+                spinner = SimpleSpinner("-->")
+                spinner.start()
+
+            if self.verbose:
+                click.echo(f"Sending {len(chunks)} chunks...")
+
+            for i, chunk in enumerate(chunks):
+                if self.verbose:
+                    click.echo(f"Sending chunk {i+1}/{len(chunks)}")
+                response = self._send_dns_query(chunk)
+                if response != "OK" and self.verbose:
+                    click.echo(f"Warning: Unexpected response for chunk {i+1}: {response}")
+
+            if spinner:
+                spinner.stop()
+                spinner = SimpleSpinner("...")
+                spinner.start()
+            elif self.verbose:
+                click.echo("Message sent, waiting for processing...")
+
+            time.sleep(2)
+
+            if spinner:
+                spinner.stop()
+                spinner = SimpleSpinner("<--")
+                spinner.start()
+            elif self.verbose:
+                click.echo("Retrieving response chunks...")
+
+            response_chunks = {}
+            chunk_index = 0
+            max_retries = 10
+
+            while chunk_index < max_retries:
+                query = f"get.{session_id}.{chunk_index}.llm.local"
+                response = self._send_dns_query(query)
+
+                if response == "NOT_FOUND":
+                    if chunk_index == 0:
+                        time.sleep(1)
+                        continue
+                    else:
+                        break
+
+                if response and ':' in response:
+                    parts = response.split(':', 2)
+                    if len(parts) == 3:
+                        current_index = int(parts[0])
+                        total_chunks = int(parts[1])
+                        response_chunks[current_index] = response
+
+                        if len(response_chunks) >= total_chunks:
+                            break
+
+                chunk_index += 1
+
+            if spinner:
+                spinner.stop()
+
+            if not response_chunks:
+                if not self.verbose:
+                    click.echo("No response received from server")
+                return None
+
+            if self.verbose:
+                click.echo(f"Received {len(response_chunks)} response chunks")
+
+            try:
+                complete_encrypted_response = self.chunker.reassemble_response(response_chunks)
+                decrypted_response = self.crypto.decrypt(complete_encrypted_response)
+                return decrypted_response
+            except Exception as e:
+                if self.verbose:
+                    click.echo(f"Error decrypting response: {e}")
+                return None
+
+        finally:
+            if spinner:
+                spinner.stop()
+
+    def test_connection(self) -> bool:
+        """Test basic connectivity to the DNS server."""
+        try:
+            # Try a simple DNS query to test connectivity
+            test_query = "test.connection.llm.local"
+            question = DNSQuestion(test_query, QTYPE.TXT)
+            header = DNSHeader(id=random.randint(1, 65535))
+            q = DNSRecord(header, q=question)
+            query_data = q.pack()
+
+            # Set shorter timeout for connection test
+            original_timeout = self.sock.gettimeout()
+            self.sock.settimeout(5.0)
+
+            self.sock.sendto(query_data, (self.server_host, self.server_port))
+            response_data, _ = self.sock.recvfrom(4096)
+
+            # Restore original timeout
+            self.sock.settimeout(original_timeout)
+
+            # If we got any response, connection is working
+            return True
+        except Exception:
+            return False
 
     def close(self):
         """Close the client connection."""
@@ -128,14 +218,35 @@ def cli():
 @click.option('--server', default='127.0.0.1', help='DNS server address')
 @click.option('--port', default=5353, help='DNS server port')
 @click.option('--message', '-m', help='Single message to send')
-def chat(server, port, message):
+@click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
+def chat(server, port, message, verbose):
     """Start a chat session with the LLM through DNS."""
-    client = DNSLLMClient(server, port)
+    client = DNSLLMClient(server, port, verbose=verbose)
+
+    # Test connection first
+    if not verbose:
+        spinner = SimpleSpinner("Testing connection")
+        spinner.start()
+
+    connection_ok = client.test_connection()
+
+    if not verbose:
+        spinner.stop()
+
+    if connection_ok:
+        click.echo(f"✓ Connected to DNS server at {server}:{port}")
+        if verbose:
+            click.echo("Connection test successful - chat is ready!")
+    else:
+        click.echo(f"✗ Failed to connect to DNS server at {server}:{port}")
+        click.echo("Please check that the server is running and accessible.")
+        client.close()
+        return
 
     try:
         if message:
             click.echo(f"You: {message}")
-            response = client.send_message(message)
+            response = client.send_message(message, show_spinner=not verbose)
             if response:
                 click.echo(f"Assistant: {response}")
         else:
@@ -148,7 +259,7 @@ def chat(server, port, message):
                     if user_input.lower() in ['quit', 'exit']:
                         break
 
-                    response = client.send_message(user_input)
+                    response = client.send_message(user_input, show_spinner=not verbose)
                     if response:
                         click.echo(f"Assistant: {response}")
                     else:
@@ -165,19 +276,40 @@ def chat(server, port, message):
 @cli.command()
 @click.option('--server', default='127.0.0.1', help='DNS server address')
 @click.option('--port', default=5353, help='DNS server port')
-def test_connection(server, port):
+@click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
+def test_connection(server, port, verbose):
     """Test connection to the DNS server."""
-    client = DNSLLMClient(server, port)
+    client = DNSLLMClient(server, port, verbose=verbose)
 
     try:
         click.echo(f"Testing connection to {server}:{port}")
-        response = client.send_message("Hello, this is a test message.")
+
+        # First test basic connectivity
+        if not verbose:
+            spinner = SimpleSpinner("Testing basic connectivity")
+            spinner.start()
+
+        basic_connection = client.test_connection()
+
+        if not verbose:
+            spinner.stop()
+
+        if not basic_connection:
+            click.echo("✗ Basic connectivity test failed")
+            click.echo("Server is not reachable or not responding to DNS queries")
+            return
+
+        click.echo("✓ Basic connectivity test passed")
+
+        # Test full message flow
+        click.echo("Testing full message flow...")
+        response = client.send_message("Hello, this is a test message.", show_spinner=not verbose)
 
         if response:
-            click.echo(f"✓ Connection successful!")
+            click.echo(f"✓ Full test successful!")
             click.echo(f"Response: {response}")
         else:
-            click.echo("✗ Connection failed or no response received")
+            click.echo("✗ Message flow test failed - no response received")
 
     finally:
         client.close()

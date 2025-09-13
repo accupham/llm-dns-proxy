@@ -129,3 +129,31 @@ class TestLLMProcessor:
 
         call_args = mock_openai.return_value.chat.completions.create.call_args
         assert call_args[1]['model'] == 'gpt-4'
+
+    @patch('llm_dns_proxy.llm.OpenAI')
+    def test_process_message_sync_with_conversation_history(self, mock_openai):
+        mock_choice = Mock()
+        mock_choice.message.content = "Based on our previous conversation, I can help!"
+        mock_response = Mock()
+        mock_response.choices = [mock_choice]
+        mock_openai.return_value.chat.completions.create.return_value = mock_response
+
+        processor = LLMProcessor(api_key="test-key")
+
+        # Create conversation history
+        conversation_history = [
+            {"role": "user", "content": "Hello, my name is Alice"},
+            {"role": "assistant", "content": "Nice to meet you, Alice!"},
+        ]
+
+        result = processor.process_message_sync("What's my name?", conversation_history=conversation_history)
+
+        assert result == "Based on our previous conversation, I can help!"
+
+        # Check that conversation history was included in the API call
+        call_args = mock_openai.return_value.chat.completions.create.call_args
+        messages = call_args[1]['messages']
+        assert len(messages) == 3  # history (2) + current message (1)
+        assert messages[0]['content'] == "Hello, my name is Alice"
+        assert messages[1]['content'] == "Nice to meet you, Alice!"
+        assert messages[2]['content'] == "What's my name?"

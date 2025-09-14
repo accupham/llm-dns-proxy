@@ -59,6 +59,11 @@ class DNSLLMClient:
         self.poll_interval = poll_interval
         self.model = model
         self.client_version = get_version_string()
+        # Use a single session ID for the entire client session to avoid collisions
+        # Mix time and random to reduce collision probability while keeping single digit
+        time_component = int(time.time()) % 10
+        random_component = uuid.uuid4().int % 10
+        self.session_id = str((time_component + random_component) % 10)
 
     def _send_dns_query(self, query_name: str) -> Optional[str]:
         """Send a DNS query and return the TXT record response."""
@@ -108,7 +113,8 @@ class DNSLLMClient:
             show_spinner: Whether to show spinner during processing
             streaming: Whether to display streaming response (default True)
         """
-        session_id = str(uuid.uuid4().int % 10)  # Single digit 0-9
+        # Use the persistent session ID for this client instance
+        session_id = self.session_id
         if self.verbose:
             click.echo(f"Using session ID: {session_id}")
         spinner = None
@@ -406,8 +412,18 @@ class DNSLLMClient:
         except Exception:
             return False
 
+    def cleanup_session(self):
+        """Send cleanup signal to server to clear session data."""
+        try:
+            # Send a cleanup query to help server clear session data
+            cleanup_query = format_dns_query("c", self.session_id)  # 'c' for cleanup
+            self._send_dns_query(cleanup_query)
+        except Exception:
+            pass  # Cleanup is best-effort
+
     def close(self):
         """Close the client connection."""
+        self.cleanup_session()
         self.sock.close()
 
 

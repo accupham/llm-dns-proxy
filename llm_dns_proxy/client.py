@@ -309,34 +309,84 @@ class DNSLLMClient:
             if self.verbose:
                 click.echo(f"Waiting for {len(missing_chunks)} missing chunks: {missing_chunks}")
 
-            # Try a few more times to get missing chunks
-            retry_attempts = 3
-            for attempt in range(retry_attempts):
-                import time
-                time.sleep(0.5)  # Wait a bit for server to generate more chunks
+            # Implement chunk-level retries with exponential backoff for flaky networks
+            max_retries = 5
+            for retry in range(max_retries):
+                if not missing_chunks:
+                    break
 
+                if self.verbose:
+                    click.echo(f"Retry {retry + 1}/{max_retries}: Requesting {len(missing_chunks)} missing chunks...")
+
+                # Exponential backoff: 0.5, 1.0, 2.0, 4.0, 8.0 seconds
+                import time
+                wait_time = 0.5 * (2 ** retry)
+                time.sleep(wait_time)
+
+                # Request specific missing chunks
+                chunks_retrieved_this_round = 0
                 for missing_idx in missing_chunks[:]:
                     query = format_dns_query("g", session_id, missing_idx)
                     response = self._send_dns_query(query)
-                    if response and response != "NOT_FOUND" and ':' in response:
-                        parts = response.split(':', 2)
-                        if len(parts) == 3:
-                            try:
-                                current_index = int(parts[0])
-                                response_chunks[current_index] = response
-                                missing_chunks.remove(missing_idx)
-                                if self.verbose:
-                                    click.echo(f"  Retrieved missing chunk {missing_idx}")
-                            except (ValueError, IndexError):
-                                pass
+
+                    if self._validate_chunk_response(response, missing_idx):
+                        response_chunks[missing_idx] = response
+                        missing_chunks.remove(missing_idx)
+                        chunks_retrieved_this_round += 1
+                        if self.verbose:
+                            click.echo(f"  ✓ Retrieved missing chunk {missing_idx}")
+                    elif self.verbose and response and response != "NOT_FOUND":
+                        click.echo(f"  ✗ Invalid chunk {missing_idx}: {response[:30]}...")
+
+                if self.verbose:
+                    click.echo(f"  Retrieved {chunks_retrieved_this_round} chunks this round")
 
                 if not missing_chunks:  # All chunks found
                     break
 
             if self.verbose and missing_chunks:
-                click.echo(f"Still missing chunks after retries: {missing_chunks}")
+                click.echo(f"Still missing {len(missing_chunks)} chunks after all retries: {missing_chunks}")
 
         return response_chunks
+
+    def _validate_chunk_response(self, response: str, expected_index: int) -> bool:
+        """Validate chunk response format and integrity.
+
+        Args:
+            response: Raw TXT record response
+            expected_index: Expected chunk index
+
+        Returns:
+            True if valid, False otherwise
+        """
+        if not response or response == "NOT_FOUND":
+            return False
+
+        parts = response.split(':', 2)
+        if len(parts) != 3:
+            return False
+
+        try:
+            actual_index = int(parts[0])
+            total_chunks = int(parts[1])
+            data = parts[2]
+
+            # Validate index matches expectation
+            if actual_index != expected_index:
+                return False
+
+            # Validate data is not empty
+            if not data:
+                return False
+
+            # Basic format validation - should be base64-like Fernet token
+            if len(data) < 20:  # Fernet tokens are at least ~44 chars
+                return False
+
+            return True
+
+        except (ValueError, IndexError):
+            return False
 
     def _handle_traditional_response(self, session_id: str, show_spinner: bool) -> Optional[str]:
         """Handle traditional non-streaming response."""

@@ -268,28 +268,64 @@ class DNSChunker:
         return result
 
     def create_streaming_chunks(self, crypto_manager, text_segments: list, session_id: str) -> Dict[int, str]:
-        """Create streaming chunks where each text segment is individually encrypted.
+        """Create streaming chunks with optimal batching for TXT records.
 
         Args:
             crypto_manager: CryptoManager instance for encryption
-            text_segments: List of text pieces to encrypt individually
+            text_segments: List of text pieces to batch and encrypt
             session_id: Session identifier
 
         Returns:
             Dictionary mapping chunk index to TXT record data
         """
+        if not text_segments:
+            return {}
+
         chunks = {}
+        max_txt_data_size = self.MAX_DNS_RECORD_LENGTH - 20  # Reserve space for "index:total:" prefix
 
-        for i, segment in enumerate(text_segments):
-            # Encrypt each segment individually
-            encrypted_segment = crypto_manager.encrypt_chunk(segment, sequence=i)
+        current_batch = ""
+        batch_segments = []
+        chunk_index = 0
 
-            # Convert to string for DNS TXT record
-            segment_b64 = encrypted_segment.decode('ascii')
+        for segment in text_segments:
+            # Try adding this segment to current batch
+            test_batch = current_batch + segment
 
-            # Format as TXT record: index:total:encrypted_data
-            txt_record = f"{i}:{len(text_segments)}:{segment_b64}"
-            chunks[i] = txt_record
+            # Estimate encrypted size (Fernet adds ~45-50 bytes overhead)
+            estimated_encrypted_size = len(test_batch.encode('utf-8')) + 50
+
+            if estimated_encrypted_size > max_txt_data_size and current_batch:
+                # Current batch is full, create chunk
+                encrypted_batch = crypto_manager.encrypt_chunk(current_batch, sequence=chunk_index)
+                batch_b64 = encrypted_batch.decode('ascii')
+
+                # Create TXT record (we'll update total count later)
+                txt_record = f"{chunk_index}:0:{batch_b64}"
+                chunks[chunk_index] = txt_record
+
+                # Start new batch
+                current_batch = segment
+                batch_segments = [segment]
+                chunk_index += 1
+            else:
+                # Add to current batch
+                current_batch = test_batch
+                batch_segments.append(segment)
+
+        # Handle final batch
+        if current_batch:
+            encrypted_batch = crypto_manager.encrypt_chunk(current_batch, sequence=chunk_index)
+            batch_b64 = encrypted_batch.decode('ascii')
+            txt_record = f"{chunk_index}:0:{batch_b64}"
+            chunks[chunk_index] = txt_record
+            chunk_index += 1
+
+        # Update all chunks with correct total count
+        total_chunks = len(chunks)
+        for idx in chunks:
+            parts = chunks[idx].split(':', 2)
+            chunks[idx] = f"{parts[0]}:{total_chunks}:{parts[2]}"
 
         return chunks
 

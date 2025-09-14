@@ -157,14 +157,14 @@ class DNSLLMClient:
                 spinner.stop()
 
     def _handle_streaming_response(self, session_id: str) -> Optional[str]:
-        """Handle streaming response by polling for partial updates."""
+        """Handle streaming response by displaying individual chunks immediately."""
         import sys
 
-        last_content = ""
-        final_response = None
+        displayed_chunks = set()  # Track which chunks we've already displayed
+        final_response = ""
         start_time = time.time()
         max_wait_time = 60  # Maximum wait time in seconds
-        last_content_change_time = time.time()
+        last_chunk_time = time.time()
 
         # Initial wait for processing to start
         time.sleep(self.poll_interval)
@@ -175,17 +175,17 @@ class DNSLLMClient:
             if current_time - start_time > max_wait_time:
                 if self.verbose:
                     click.echo(f"\nTimeout waiting for response after {max_wait_time}s")
-                final_response = last_content.rstrip('[EOS]') if last_content else "Timeout - no response received"
                 break
 
-            # Check if content hasn't changed for too long (indicates completion)
-            # But only if we have some content and it doesn't end with [EOS]
-            if last_content and current_time - last_content_change_time > 15:  # 15 seconds without change
-                if last_content.endswith('[EOS]'):
-                    final_response = last_content.rstrip('[EOS]')
+            # Check if no new chunks for too long (indicates completion)
+            if current_time - last_chunk_time > 10:  # 10 seconds without new chunks
+                if final_response and '[EOS]' in final_response:
                     break
-                elif len(last_content) > 50:  # Only timeout if we have substantial content
-                    final_response = last_content + "\n[Response may be incomplete - connection timed out]"
+                elif len(final_response) > 50:  # Only timeout if we have substantial content
+                    if not final_response.endswith('\n'):
+                        sys.stdout.write('\n')
+                        sys.stdout.flush()
+                    final_response += "[Response may be incomplete - connection timed out]"
                     break
 
             response_chunks = self._get_current_response_chunks(session_id)
@@ -194,70 +194,50 @@ class DNSLLMClient:
                 time.sleep(self.poll_interval)
                 continue
 
-            try:
-                # Try streaming decryption first (new method)
-                try:
-                    current_content = self.chunker.reassemble_streaming_chunks(self.crypto, response_chunks)
-                    # If empty, fall back to traditional method
-                    if not current_content:
-                        current_encrypted = self.chunker.reassemble_response(response_chunks)
-                        current_content = self.crypto.decrypt(current_encrypted)
-                except Exception:
-                    # Fall back to traditional decryption
-                    current_encrypted = self.chunker.reassemble_response(response_chunks)
-                    current_content = self.crypto.decrypt(current_encrypted)
+            # Process each new chunk individually and display immediately
+            new_chunks_found = False
+            for chunk_index, chunk_data in response_chunks.items():
+                if chunk_index not in displayed_chunks:
+                    displayed_chunks.add(chunk_index)
+                    new_chunks_found = True
+                    last_chunk_time = current_time
 
-                # Display new content
-                if len(current_content) > len(last_content):
-                    new_content = current_content[len(last_content):]
-
-                    # Don't display [EOS] marker to user
-                    display_content = new_content.replace('[EOS]', '')
-                    if display_content:  # Only write if there's content after removing [EOS]
-                        sys.stdout.write(display_content)
-                        sys.stdout.flush()
-
-                    last_content = current_content
-                    last_content_change_time = current_time  # Update the last change time
-
-                    # Check if response is complete by looking for [EOS] marker
-                    looks_complete = current_content.endswith('[EOS]')
-
-                    if looks_complete:
-                        time.sleep(0.5)  # Wait to see if more content comes
-
-                        # Check again
-                        new_chunks = self._get_current_response_chunks(session_id)
-                        if new_chunks:
+                    try:
+                        # Try to decrypt this individual chunk
+                        parts = chunk_data.split(':', 2)
+                        if len(parts) == 3:
+                            encrypted_data = parts[2].encode('ascii')
                             try:
-                                # Try streaming decryption first
-                                try:
-                                    new_content_check = self.chunker.reassemble_streaming_chunks(self.crypto, new_chunks)
-                                    if not new_content_check:
-                                        new_encrypted = self.chunker.reassemble_response(new_chunks)
-                                        new_content_check = self.crypto.decrypt(new_encrypted)
-                                except Exception:
-                                    new_encrypted = self.chunker.reassemble_response(new_chunks)
-                                    new_content_check = self.crypto.decrypt(new_encrypted)
-
-                                if new_content_check == current_content:
-                                    # No change, response is complete
-                                    # Remove [EOS] marker from final response
-                                    final_response = current_content.rstrip('[EOS]')
-                                    break
-
+                                # Try streaming chunk decryption
+                                chunk_text = self.crypto.decrypt_chunk(encrypted_data)
                             except Exception:
-                                pass
+                                # Fall back to regular decryption if chunk method fails
+                                chunk_text = self.crypto.decrypt(encrypted_data)
 
-                time.sleep(self.poll_interval)  # Small delay between polls
+                            # Display chunk content immediately (remove [EOS] marker)
+                            display_text = chunk_text.replace('[EOS]', '')
+                            if display_text:
+                                sys.stdout.write(display_text)
+                                sys.stdout.flush()
+                                final_response += display_text
 
-            except Exception as e:
-                if self.verbose:
-                    click.echo(f"\nError processing streaming response: {e}")
-                time.sleep(0.2)
-                continue
+                            # Check if this chunk contains [EOS] marker
+                            if '[EOS]' in chunk_text:
+                                if not final_response.endswith('\n'):
+                                    sys.stdout.write('\n')
+                                    sys.stdout.flush()
+                                return final_response.rstrip()
 
-        return final_response
+                    except Exception as e:
+                        if self.verbose:
+                            click.echo(f"\nError decrypting chunk {chunk_index}: {e}")
+                        continue
+
+            if not new_chunks_found:
+                time.sleep(self.poll_interval)
+
+        # Return final response (timeout case)
+        return final_response.rstrip() if final_response else None
 
     def _get_current_response_chunks(self, session_id: str) -> dict:
         """Get current response chunks from server."""
@@ -400,7 +380,7 @@ class DNSLLMClient:
                 click.echo("Message sent, waiting for processing...")
 
             # Wait longer for server to generate response, especially for long responses
-            time.sleep(8)  # Increased wait time for server generation
+            time.sleep(1)  # Increased wait time for server generation
 
             if spinner:
                 spinner.stop()

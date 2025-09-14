@@ -333,7 +333,8 @@ class DNSLLMClient:
             elif self.verbose:
                 click.echo("Message sent, waiting for processing...")
 
-            time.sleep(5)  # Give server more time to generate all chunks
+            # Wait longer for server to generate response, especially for long responses
+            time.sleep(8)  # Increased wait time for server generation
 
             if spinner:
                 spinner.stop()
@@ -343,7 +344,29 @@ class DNSLLMClient:
                 click.echo("Retrieving response chunks...")
 
             # Use the improved chunk retrieval method
-            response_chunks = self._get_current_response_chunks(session_id)
+            # Try multiple times until we get a complete response (marked with [EOS])
+            response_chunks = {}
+            max_attempts = 5
+
+            for attempt in range(max_attempts):
+                response_chunks = self._get_current_response_chunks(session_id)
+
+                if response_chunks:
+                    # Try to reassemble and check if it's complete
+                    try:
+                        reassembled = self.chunker.reassemble_response(response_chunks)
+                        if reassembled:
+                            decrypted = self.crypto.decrypt(reassembled)
+                            if '[EOS]' in decrypted:
+                                # Response is complete
+                                break
+                    except Exception:
+                        pass  # Decryption failed, keep trying
+
+                if attempt < max_attempts - 1:  # Don't sleep on last attempt
+                    if self.verbose:
+                        click.echo(f"Response incomplete, waiting... (attempt {attempt + 1}/{max_attempts})")
+                    time.sleep(2)  # Wait before retrying
 
             if spinner:
                 spinner.stop()

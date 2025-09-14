@@ -247,12 +247,12 @@ class DNSChunker:
 
         if expected_indices != available_indices:
             # Missing chunks - return empty to indicate incomplete data
-            missing = expected_indices - available_indices
-            print(f"DEBUG: Missing chunks {sorted(missing)}, have {sorted(available_indices)}, need {sorted(expected_indices)}")
+            # missing = expected_indices - available_indices
+            # Silently return empty for incomplete chunks
             return b''
 
         # All chunks present - reassemble in order
-        print(f"DEBUG: Reassembling {total_chunks} chunks")
+        # Reassembling all chunks
         sorted_chunks = sorted(chunks.items())
         complete_data = ''
 
@@ -263,5 +263,5 @@ class DNSChunker:
 
         # Return the Fernet token as bytes (already in proper format)
         result = complete_data.encode('ascii')
-        print(f"DEBUG: Reassembled data: {len(result)} bytes, starts with: {result[:50]}")
+        # Successfully reassembled data
         return result

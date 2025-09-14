@@ -171,9 +171,14 @@ class DNSLLMClient:
                 break
 
             # Check if content hasn't changed for too long (indicates completion)
-            if last_content and current_time - last_content_change_time > 5:  # 5 seconds without change
-                final_response = last_content.rstrip('[EOS]')
-                break
+            # But only if we have some content and it doesn't end with [EOS]
+            if last_content and current_time - last_content_change_time > 15:  # 15 seconds without change
+                if last_content.endswith('[EOS]'):
+                    final_response = last_content.rstrip('[EOS]')
+                    break
+                elif len(last_content) > 50:  # Only timeout if we have substantial content
+                    final_response = last_content + "\n[Response may be incomplete - connection timed out]"
+                    break
 
             response_chunks = self._get_current_response_chunks(session_id)
 

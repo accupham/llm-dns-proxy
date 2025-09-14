@@ -250,7 +250,7 @@ class DNSLLMClient:
         max_chunks = 100  # Increased limit for large responses
         total_chunks = None
         consecutive_not_found = 0
-        max_consecutive_not_found = 5  # Allow some gaps in chunk availability
+        max_consecutive_not_found = 50  # Allow more gaps - server may be generating chunks slowly
 
         while chunk_index < max_chunks and consecutive_not_found < max_consecutive_not_found:
             query = format_dns_query("g", session_id, chunk_index)
@@ -274,7 +274,7 @@ class DNSLLMClient:
                         # Update total_chunks if we haven't seen it yet or if it's larger
                         if total_chunks is None or chunk_total > total_chunks:
                             total_chunks = chunk_total
-                            max_chunks = min(max_chunks, total_chunks)  # Optimize search
+                            # Don't limit max_chunks yet - server might still be generating more
 
                         # If we have all chunks we expect, we can break early
                         if total_chunks and len(response_chunks) >= total_chunks:
@@ -287,10 +287,38 @@ class DNSLLMClient:
 
             chunk_index += 1
 
-        if self.verbose and total_chunks:
+        # If we know how many chunks we should have, try to wait for missing ones
+        if total_chunks and len(response_chunks) < total_chunks:
             missing_chunks = [i for i in range(total_chunks) if i not in response_chunks]
-            if missing_chunks:
-                click.echo(f"Missing chunks: {missing_chunks}")
+            if self.verbose:
+                click.echo(f"Waiting for {len(missing_chunks)} missing chunks: {missing_chunks}")
+
+            # Try a few more times to get missing chunks
+            retry_attempts = 3
+            for attempt in range(retry_attempts):
+                import time
+                time.sleep(0.5)  # Wait a bit for server to generate more chunks
+
+                for missing_idx in missing_chunks[:]:
+                    query = format_dns_query("g", session_id, missing_idx)
+                    response = self._send_dns_query(query)
+                    if response and response != "NOT_FOUND" and ':' in response:
+                        parts = response.split(':', 2)
+                        if len(parts) == 3:
+                            try:
+                                current_index = int(parts[0])
+                                response_chunks[current_index] = response
+                                missing_chunks.remove(missing_idx)
+                                if self.verbose:
+                                    click.echo(f"  Retrieved missing chunk {missing_idx}")
+                            except (ValueError, IndexError):
+                                pass
+
+                if not missing_chunks:  # All chunks found
+                    break
+
+            if self.verbose and missing_chunks:
+                click.echo(f"Still missing chunks after retries: {missing_chunks}")
 
         return response_chunks
 

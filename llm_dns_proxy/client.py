@@ -287,13 +287,8 @@ class DNSLLMClient:
 
             chunk_index += 1
 
-        if self.verbose:
-            click.echo(f"DEBUG: Final - total_chunks={total_chunks}, got {len(response_chunks)} chunks")
-
         # If we know how many chunks we should have, try to wait for missing ones
         if total_chunks and len(response_chunks) < total_chunks:
-            if self.verbose:
-                click.echo(f"DEBUG: Have {len(response_chunks)} chunks, need {total_chunks}")
             missing_chunks = [i for i in range(total_chunks) if i not in response_chunks]
             if self.verbose:
                 click.echo(f"Waiting for {len(missing_chunks)} missing chunks: {missing_chunks}")
@@ -347,32 +342,8 @@ class DNSLLMClient:
             elif self.verbose:
                 click.echo("Retrieving response chunks...")
 
-            response_chunks = {}
-            chunk_index = 0
-            max_retries = 10
-
-            while chunk_index < max_retries:
-                query = format_dns_query("g", session_id, chunk_index)
-                response = self._send_dns_query(query)
-
-                if response == "NOT_FOUND":
-                    if chunk_index == 0:
-                        time.sleep(1)
-                        continue
-                    else:
-                        break
-
-                if response and ':' in response:
-                    parts = response.split(':', 2)
-                    if len(parts) == 3:
-                        current_index = int(parts[0])
-                        total_chunks = int(parts[1])
-                        response_chunks[current_index] = response
-
-                        if len(response_chunks) >= total_chunks:
-                            break
-
-                chunk_index += 1
+            # Use the improved chunk retrieval method
+            response_chunks = self._get_current_response_chunks(session_id)
 
             if spinner:
                 spinner.stop()

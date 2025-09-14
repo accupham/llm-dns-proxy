@@ -109,6 +109,8 @@ class DNSLLMClient:
             streaming: Whether to display streaming response (default True)
         """
         session_id = str(uuid.uuid4().int % 10)  # Single digit 0-9
+        if self.verbose:
+            click.echo(f"Using session ID: {session_id}")
         spinner = None
 
         try:
@@ -232,26 +234,50 @@ class DNSLLMClient:
         """Get current response chunks from server."""
         response_chunks = {}
         chunk_index = 0
-        max_chunks = 50  # Reasonable limit
+        max_chunks = 100  # Increased limit for large responses
+        total_chunks = None
+        consecutive_not_found = 0
+        max_consecutive_not_found = 5  # Allow some gaps in chunk availability
 
-        while chunk_index < max_chunks:
+        while chunk_index < max_chunks and consecutive_not_found < max_consecutive_not_found:
             query = format_dns_query("g", session_id, chunk_index)
             response = self._send_dns_query(query)
 
             if response == "NOT_FOUND":
-                break
+                consecutive_not_found += 1
+                chunk_index += 1
+                continue
+            else:
+                consecutive_not_found = 0  # Reset counter on successful retrieval
 
             if response and ':' in response:
                 parts = response.split(':', 2)
                 if len(parts) == 3:
-                    current_index = int(parts[0])
-                    total_chunks = int(parts[1])
-                    response_chunks[current_index] = response
+                    try:
+                        current_index = int(parts[0])
+                        chunk_total = int(parts[1])
+                        response_chunks[current_index] = response
 
-                    if len(response_chunks) >= total_chunks:
-                        break
+                        # Update total_chunks if we haven't seen it yet or if it's larger
+                        if total_chunks is None or chunk_total > total_chunks:
+                            total_chunks = chunk_total
+                            max_chunks = min(max_chunks, total_chunks)  # Optimize search
+
+                        # If we have all chunks we expect, we can break early
+                        if total_chunks and len(response_chunks) >= total_chunks:
+                            # Verify we have a contiguous sequence from 0 to total_chunks-1
+                            if all(i in response_chunks for i in range(total_chunks)):
+                                break
+                    except (ValueError, IndexError):
+                        if self.verbose:
+                            click.echo(f"Error parsing chunk response: {response}")
 
             chunk_index += 1
+
+        if self.verbose and total_chunks:
+            missing_chunks = [i for i in range(total_chunks) if i not in response_chunks]
+            if missing_chunks:
+                click.echo(f"Missing chunks: {missing_chunks}")
 
         return response_chunks
 
@@ -320,6 +346,9 @@ class DNSLLMClient:
             except Exception as e:
                 if self.verbose:
                     click.echo(f"Error decrypting response: {e}")
+                    click.echo(f"Encrypted data length: {len(complete_encrypted_response) if complete_encrypted_response else 0}")
+                    if complete_encrypted_response:
+                        click.echo(f"Encrypted data starts with: {complete_encrypted_response[:50]}")
                 return None
 
         finally:

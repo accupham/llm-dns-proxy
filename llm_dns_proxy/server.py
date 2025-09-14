@@ -171,9 +171,6 @@ class LLMDNSResolver(BaseResolver):
                         for i, msg in enumerate(conversation_history):
                             role = "User" if msg["role"] == "user" else "Assistant"
                             content = msg["content"]
-                            # Truncate very long messages for readability
-                            if len(content) > 200:
-                                content = content[:197] + "..."
                             history_lines.append(f"{i+1}. {role}: {content}")
 
                         total_messages = len(self.conversations.get(client_ip, []))

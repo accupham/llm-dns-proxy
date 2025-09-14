@@ -221,10 +221,38 @@ class DNSChunker:
     def reassemble_response(self, chunks: Dict[int, str]) -> bytes:
         """
         Reassemble response chunks into complete encrypted Fernet token bytes.
+        Only returns data if all expected chunks are present.
         """
         if not chunks:
             return b''
 
+        # First, determine the total number of chunks expected
+        total_chunks = None
+        for chunk_data in chunks.values():
+            parts = chunk_data.split(':', 2)
+            if len(parts) == 3:
+                try:
+                    chunk_total = int(parts[1])
+                    if total_chunks is None or chunk_total > total_chunks:
+                        total_chunks = chunk_total
+                except ValueError:
+                    continue
+
+        if total_chunks is None:
+            return b''  # Can't determine expected chunk count
+
+        # Check if we have all expected chunks (0 to total_chunks-1)
+        expected_indices = set(range(total_chunks))
+        available_indices = set(chunks.keys())
+
+        if expected_indices != available_indices:
+            # Missing chunks - return empty to indicate incomplete data
+            missing = expected_indices - available_indices
+            print(f"DEBUG: Missing chunks {sorted(missing)}, have {sorted(available_indices)}, need {sorted(expected_indices)}")
+            return b''
+
+        # All chunks present - reassemble in order
+        print(f"DEBUG: Reassembling {total_chunks} chunks")
         sorted_chunks = sorted(chunks.items())
         complete_data = ''
 
@@ -234,4 +262,6 @@ class DNSChunker:
                 complete_data += parts[2]
 
         # Return the Fernet token as bytes (already in proper format)
-        return complete_data.encode('ascii')
+        result = complete_data.encode('ascii')
+        print(f"DEBUG: Reassembled data: {len(result)} bytes, starts with: {result[:50]}")
+        return result

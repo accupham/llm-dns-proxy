@@ -88,18 +88,19 @@ class DNSChunker:
         Returns list of DNS query strings in format: m.sessionid.index.total.data1.data2.<suffix>
         """
         if session_id is None:
-            # Use 1-char base36 session ID for max 10 concurrent users (0-9)
-            # Keep it simple with just digits for better readability
-            session_id = str(uuid.uuid4().int % 10)
+            # Use 3-digit session ID for 1000 concurrent users (000-999)
+            # Zero-padded for consistency
+            session_num = uuid.uuid4().int % 1000
+            session_id = f"{session_num:03d}"
 
         # Convert Fernet token to DNS-safe base36 for labels
         # Base36 uses only 0-9a-z which is DNS-safe and more efficient than base32
         data_b36 = bytes_to_base36(encrypted_data)
 
         # Calculate base qname overhead: "m." + sessionid + "." + index + "." + total + "." + ".<suffix>"
-        # Worst case with _sonos._tcp.local: m.9.999.999.._sonos._tcp.local = ~35 chars + dots
+        # Worst case with _sonos._tcp.local: m.999.999.999.._sonos._tcp.local = ~39 chars + dots
         dns_suffix = get_dns_suffix()
-        base_overhead = len(f"m.9.999.999.{dns_suffix}") + 5  # +5 for safety margin
+        base_overhead = len(f"m.999.999.999.{dns_suffix}") + 5  # +5 for safety margin
 
         max_data_per_chunk = self.MAX_DNS_QNAME_LENGTH - base_overhead
         total_chunks = math.ceil(len(data_b36) / max_data_per_chunk)

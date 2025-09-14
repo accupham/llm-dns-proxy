@@ -60,10 +60,12 @@ class DNSLLMClient:
         self.model = model
         self.client_version = get_version_string()
         # Use a single session ID for the entire client session to avoid collisions
-        # Mix time and random to reduce collision probability while keeping single digit
-        time_component = int(time.time()) % 10
-        random_component = uuid.uuid4().int % 10
-        self.session_id = str((time_component + random_component) % 10)
+        # Use 3-digit session ID (000-999) for much better uniqueness
+        # Mix timestamp and random for collision avoidance
+        time_component = int(time.time()) % 1000
+        random_component = uuid.uuid4().int % 1000
+        session_num = (time_component + random_component) % 1000
+        self.session_id = f"{session_num:03d}"  # Zero-padded 3 digits
 
     def _send_dns_query(self, query_name: str) -> Optional[str]:
         """Send a DNS query and return the TXT record response."""

@@ -48,7 +48,7 @@ class SimpleSpinner:
 
 
 class DNSLLMClient:
-    def __init__(self, server_host: str = "127.0.0.1", server_port: int = 5353, crypto_key: bytes = None, verbose: bool = False, poll_interval: float = 0.5, model: str = "LLM"):
+    def __init__(self, server_host: str = "127.0.0.1", server_port: int = 5353, crypto_key: bytes = None, verbose: bool = False, poll_interval: float = 0.1, model: str = "LLM"):
         self.server_host = server_host
         self.server_port = server_port
         self.crypto = CryptoManager(crypto_key)
@@ -513,7 +513,7 @@ def cli():
 @click.option('--port', default=5353, help='DNS server port')
 @click.option('--message', '-m', help='Single message to send')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
-@click.option('--poll-interval', default=0.5, help='Polling interval in seconds for streaming responses')
+@click.option('--poll-interval', default=0.1, help='Polling interval in seconds for streaming responses')
 @click.option('--model', default='LLM', help='Model name to display in chat (for display purposes only)')
 def chat(server, port, message, verbose, poll_interval, model):
     """Start a chat session with the LLM through DNS."""
@@ -602,7 +602,7 @@ def chat(server, port, message, verbose, poll_interval, model):
 @click.option('--server', default='127.0.0.1', help='DNS server address')
 @click.option('--port', default=5353, help='DNS server port')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
-@click.option('--poll-interval', default=0.5, help='Polling interval in seconds for streaming responses')
+@click.option('--poll-interval', default=0.1, help='Polling interval in seconds for streaming responses')
 @click.option('--model', default='LLM', help='Model name to display in chat (for display purposes only)')
 def test_connection(server, port, verbose, poll_interval, model):
     """Test connection to the DNS server."""

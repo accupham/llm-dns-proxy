@@ -287,8 +287,13 @@ class DNSLLMClient:
 
             chunk_index += 1
 
+        if self.verbose:
+            click.echo(f"DEBUG: Final - total_chunks={total_chunks}, got {len(response_chunks)} chunks")
+
         # If we know how many chunks we should have, try to wait for missing ones
         if total_chunks and len(response_chunks) < total_chunks:
+            if self.verbose:
+                click.echo(f"DEBUG: Have {len(response_chunks)} chunks, need {total_chunks}")
             missing_chunks = [i for i in range(total_chunks) if i not in response_chunks]
             if self.verbose:
                 click.echo(f"Waiting for {len(missing_chunks)} missing chunks: {missing_chunks}")
@@ -333,7 +338,7 @@ class DNSLLMClient:
             elif self.verbose:
                 click.echo("Message sent, waiting for processing...")
 
-            time.sleep(2)
+            time.sleep(5)  # Give server more time to generate all chunks
 
             if spinner:
                 spinner.stop()

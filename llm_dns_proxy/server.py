@@ -297,29 +297,73 @@ Current model: """ + self.model_name + "[EOS]"
                     if session_id not in self.response_cache:
                         self.response_cache[session_id] = {}
 
-                # Process streaming tokens
+                # Process streaming tokens with word-level encryption
+                streaming_segments = []  # Collect words for individual encryption
+                current_word = ""
+
                 for token_data in self.llm.process_message_stream(decrypted_message,
                                                                 conversation_history=conversation_history):
                     if token_data['type'] == 'token':
-                        complete_response += token_data['content']
+                        token_content = token_data['content']
+                        complete_response += token_content
+                        current_word += token_content
 
-                        # Create encrypted chunk for this partial response
-                        encrypted_partial = self.crypto.encrypt(complete_response)
-                        partial_chunks = self.chunker.create_response_chunks(encrypted_partial, session_id)
+                        # Check if we have a complete word (ends with space or punctuation)
+                        if token_content.endswith((' ', '\n', '.', ',', '!', '?', ':', ';')):
+                            if current_word.strip():  # Only add non-empty words
+                                streaming_segments.append(current_word)
+                                current_word = ""
 
-                        # Update cache with current state
-                        with self.lock:
-                            self.response_cache[session_id] = partial_chunks
+                                # Create streaming chunks with individual word encryption
+                                try:
+                                    partial_chunks = self.chunker.create_streaming_chunks(
+                                        self.crypto, streaming_segments, session_id)
 
-                        chunk_count += 1
+                                    # Update cache with current state
+                                    with self.lock:
+                                        self.response_cache[session_id] = partial_chunks
+
+                                    chunk_count += 1
+                                except Exception as e:
+                                    logger.error(f"Error creating streaming chunks: {e}")
+                                    # Fall back to traditional chunking
+                                    encrypted_partial = self.crypto.encrypt(complete_response)
+                                    partial_chunks = self.chunker.create_response_chunks(encrypted_partial, session_id)
+                                    with self.lock:
+                                        self.response_cache[session_id] = partial_chunks
 
                         # Small delay to prevent overwhelming the system
                         time.sleep(0.01)
 
                     elif token_data['type'] == 'complete':
+                        # Handle any remaining partial word
+                        if current_word.strip():
+                            streaming_segments.append(current_word)
+
                         # Final complete response
                         complete_response = token_data['content']
                         logger.info(f"LLM response: {complete_response[:100]}...")
+
+                        # Create final streaming chunks if we have segments
+                        if streaming_segments:
+                            try:
+                                final_chunks = self.chunker.create_streaming_chunks(
+                                    self.crypto, streaming_segments, session_id)
+                                with self.lock:
+                                    self.response_cache[session_id] = final_chunks
+                            except Exception as e:
+                                logger.error(f"Error creating final streaming chunks: {e}")
+                                # Fall back to traditional method
+                                encrypted_response = self.crypto.encrypt(complete_response)
+                                response_chunks = self.chunker.create_response_chunks(encrypted_response, session_id)
+                                with self.lock:
+                                    self.response_cache[session_id] = response_chunks
+                        else:
+                            # No streaming segments, use traditional method
+                            encrypted_response = self.crypto.encrypt(complete_response)
+                            response_chunks = self.chunker.create_response_chunks(encrypted_response, session_id)
+                            with self.lock:
+                                self.response_cache[session_id] = response_chunks
 
                         # Update conversation history
                         with self.lock:

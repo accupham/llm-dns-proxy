@@ -266,3 +266,59 @@ class DNSChunker:
         result = complete_data.encode('ascii')
         # Successfully reassembled data
         return result
+
+    def create_streaming_chunks(self, crypto_manager, text_segments: list, session_id: str) -> Dict[int, str]:
+        """Create streaming chunks where each text segment is individually encrypted.
+
+        Args:
+            crypto_manager: CryptoManager instance for encryption
+            text_segments: List of text pieces to encrypt individually
+            session_id: Session identifier
+
+        Returns:
+            Dictionary mapping chunk index to TXT record data
+        """
+        chunks = {}
+
+        for i, segment in enumerate(text_segments):
+            # Encrypt each segment individually
+            encrypted_segment = crypto_manager.encrypt_chunk(segment, sequence=i)
+
+            # Convert to string for DNS TXT record
+            segment_b64 = encrypted_segment.decode('ascii')
+
+            # Format as TXT record: index:total:encrypted_data
+            txt_record = f"{i}:{len(text_segments)}:{segment_b64}"
+            chunks[i] = txt_record
+
+        return chunks
+
+    def reassemble_streaming_chunks(self, crypto_manager, chunks: Dict[int, str]) -> str:
+        """Reassemble streaming chunks by decrypting each individually.
+
+        Args:
+            crypto_manager: CryptoManager instance for decryption
+            chunks: Dictionary mapping chunk index to TXT record data
+
+        Returns:
+            Complete reassembled and decrypted text
+        """
+        if not chunks:
+            return ""
+
+        # Sort chunks by index
+        sorted_chunks = sorted(chunks.items())
+        complete_text = ""
+
+        for _, chunk_data in sorted_chunks:
+            parts = chunk_data.split(':', 2)
+            if len(parts) == 3:
+                encrypted_data = parts[2].encode('ascii')
+                try:
+                    decrypted_segment = crypto_manager.decrypt_chunk(encrypted_data)
+                    complete_text += decrypted_segment
+                except Exception:
+                    # Skip corrupted chunks
+                    continue
+
+        return complete_text

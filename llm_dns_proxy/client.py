@@ -195,8 +195,17 @@ class DNSLLMClient:
                 continue
 
             try:
-                current_encrypted = self.chunker.reassemble_response(response_chunks)
-                current_content = self.crypto.decrypt(current_encrypted)
+                # Try streaming decryption first (new method)
+                try:
+                    current_content = self.chunker.reassemble_streaming_chunks(self.crypto, response_chunks)
+                    # If empty, fall back to traditional method
+                    if not current_content:
+                        current_encrypted = self.chunker.reassemble_response(response_chunks)
+                        current_content = self.crypto.decrypt(current_encrypted)
+                except Exception:
+                    # Fall back to traditional decryption
+                    current_encrypted = self.chunker.reassemble_response(response_chunks)
+                    current_content = self.crypto.decrypt(current_encrypted)
 
                 # Display new content
                 if len(current_content) > len(last_content):
@@ -221,8 +230,15 @@ class DNSLLMClient:
                         new_chunks = self._get_current_response_chunks(session_id)
                         if new_chunks:
                             try:
-                                new_encrypted = self.chunker.reassemble_response(new_chunks)
-                                new_content_check = self.crypto.decrypt(new_encrypted)
+                                # Try streaming decryption first
+                                try:
+                                    new_content_check = self.chunker.reassemble_streaming_chunks(self.crypto, new_chunks)
+                                    if not new_content_check:
+                                        new_encrypted = self.chunker.reassemble_response(new_chunks)
+                                        new_content_check = self.crypto.decrypt(new_encrypted)
+                                except Exception:
+                                    new_encrypted = self.chunker.reassemble_response(new_chunks)
+                                    new_content_check = self.crypto.decrypt(new_encrypted)
 
                                 if new_content_check == current_content:
                                     # No change, response is complete

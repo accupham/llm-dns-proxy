@@ -342,7 +342,7 @@ Current model: """ + self.model_name + "[EOS]"
 
                         # Final complete response
                         complete_response = token_data['content']
-                        logger.info(f"LLM response: {complete_response[:100]}...")
+                        logger.info(f"LLM response: {complete_response}")
 
                         # Create final streaming chunks if we have segments
                         if streaming_segments:

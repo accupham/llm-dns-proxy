@@ -186,7 +186,10 @@ class DNSChunker:
         # Fernet tokens are already URL-safe base64 bytes, just decode to string for TXT
         # No double-encoding needed - TXT records can handle the Fernet format directly
         data_b64 = encrypted_data.decode('ascii')
-        max_chunk_size = self.MAX_DNS_RECORD_LENGTH - 50
+
+        # More conservative sizing to account for index:total: prefix
+        max_prefix_size = 10  # "999:999:" with some margin
+        max_chunk_size = self.MAX_DNS_RECORD_LENGTH - max_prefix_size
 
         total_chunks = math.ceil(len(data_b64) / max_chunk_size)
         chunks = {}
@@ -197,6 +200,17 @@ class DNSChunker:
             chunk_data = data_b64[start:end]
 
             txt_record = f"{i}:{total_chunks}:{chunk_data}"
+
+            # Validate final chunk size
+            if len(txt_record) > self.MAX_DNS_RECORD_LENGTH:
+                print(f"Warning: Traditional chunk {i} exceeds DNS limit: {len(txt_record)} > {self.MAX_DNS_RECORD_LENGTH}")
+                # Reduce chunk data to fit
+                max_data_len = self.MAX_DNS_RECORD_LENGTH - len(f"{i}:{total_chunks}:")
+                if max_data_len > 0:
+                    chunk_data = chunk_data[:max_data_len]
+                    txt_record = f"{i}:{total_chunks}:{chunk_data}"
+                    print(f"Truncated traditional chunk {i} to {len(txt_record)} bytes")
+
             chunks[i] = txt_record
 
         return chunks
@@ -282,7 +296,11 @@ class DNSChunker:
             return {}
 
         chunks = {}
-        max_txt_data_size = self.MAX_DNS_RECORD_LENGTH - 20  # Reserve space for "index:total:" prefix
+        # More conservative sizing: account for index:total: prefix (up to "999:999:")
+        # Plus significant Fernet overhead (~60-80 bytes for base64 encoding + crypto)
+        max_prefix_size = 8  # "999:999:"
+        max_fernet_overhead = 80  # More conservative estimate
+        max_txt_data_size = self.MAX_DNS_RECORD_LENGTH - max_prefix_size - max_fernet_overhead
 
         current_batch = ""
         batch_segments = []
@@ -292,10 +310,12 @@ class DNSChunker:
             # Try adding this segment to current batch
             test_batch = current_batch + segment
 
-            # Estimate encrypted size (Fernet adds ~45-50 bytes overhead)
-            estimated_encrypted_size = len(test_batch.encode('utf-8')) + 50
+            # Test actual encryption to get real size
+            test_encrypted = crypto_manager.encrypt_chunk(test_batch, sequence=0)
+            test_b64 = test_encrypted.decode('ascii')
+            estimated_final_size = len(f"0:999:{test_b64}")  # Worst case prefix
 
-            if estimated_encrypted_size > max_txt_data_size and current_batch:
+            if estimated_final_size > self.MAX_DNS_RECORD_LENGTH and current_batch:
                 # Current batch is full, create chunk
                 encrypted_batch = crypto_manager.encrypt_chunk(current_batch, sequence=chunk_index)
                 batch_b64 = encrypted_batch.decode('ascii')
@@ -321,11 +341,24 @@ class DNSChunker:
             chunks[chunk_index] = txt_record
             chunk_index += 1
 
-        # Update all chunks with correct total count
+        # Update all chunks with correct total count and validate size
         total_chunks = len(chunks)
         for idx in chunks:
             parts = chunks[idx].split(':', 2)
-            chunks[idx] = f"{parts[0]}:{total_chunks}:{parts[2]}"
+            final_chunk = f"{parts[0]}:{total_chunks}:{parts[2]}"
+
+            # Validate final chunk size
+            if len(final_chunk) > self.MAX_DNS_RECORD_LENGTH:
+                # This shouldn't happen with our sizing, but log it if it does
+                print(f"Warning: Chunk {idx} exceeds DNS record limit: {len(final_chunk)} > {self.MAX_DNS_RECORD_LENGTH}")
+                # Truncate or split further if needed
+                max_data_len = self.MAX_DNS_RECORD_LENGTH - len(f"{parts[0]}:{total_chunks}:")
+                if max_data_len > 0:
+                    truncated_data = parts[2][:max_data_len]
+                    final_chunk = f"{parts[0]}:{total_chunks}:{truncated_data}"
+                    print(f"Truncated chunk {idx} to {len(final_chunk)} bytes")
+
+            chunks[idx] = final_chunk
 
         return chunks
 
